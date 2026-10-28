@@ -48,10 +48,41 @@ function prune() {
   keys.forEach(function (k) { if (priceCache[k].t < cut) delete priceCache[k]; });
 }
 
+// Tokens somebody looked at recently are refreshed in the background (see startWatcher), so the
+// token page and the fills always find a fresh price in the cache instead of waiting on DexScreener.
+const watched = {};
+const WATCH_FOR_MS = 45000, WATCH_MAX_PER_TICK = 90;
+const WATCH_EVERY_MS = Number(process.env.WATCH_EVERY_MS) || 2500;
+let watching = false;
+
+async function refresh(chunk) {
+  stats.dexCalls++;
+  const pairs = await http.getJson(DEX + '/tokens/v1/solana/' + chunk.join(','));
+  bestPairs(pairs).forEach(function (s) { priceCache[s.mint] = s; });
+}
+
+exports.startWatcher = function () {
+  const timer = setInterval(async function () {
+    if (watching) return;
+    watching = true;
+    try {
+      const now = Date.now();
+      const list = Object.keys(watched).filter(function (m) {
+        if (now - watched[m] > WATCH_FOR_MS) { delete watched[m]; return false; }
+        return !priceCache[m] || now - priceCache[m].t > WATCH_EVERY_MS - 500;
+      }).sort(function (a, b) { return watched[b] - watched[a]; }).slice(0, WATCH_MAX_PER_TICK);
+      for (let i = 0; i < list.length; i += 30) { try { await refresh(list.slice(i, i + 30)); } catch (e) { /* next tick tries again */ } }
+    } finally { watching = false; }
+  }, WATCH_EVERY_MS);
+  if (timer.unref) timer.unref();
+  return timer;
+};
+
 // maxAgeMs: how old a cached price may be. Returns { mint: snapshot } for the mints that exist.
 exports.prices = async function (mints, maxAgeMs) {
   const out = {}, need = [], now = Date.now();
   mints.forEach(function (m) {
+    if (exports.isMint(m)) watched[m] = now;
     const c = priceCache[m];
     if (c && now - c.t <= maxAgeMs) { out[m] = c; stats.priceHits++; } else if (exports.isMint(m)) need.push(m);
   });
@@ -102,6 +133,54 @@ exports.trending = async function () {
     trendCache = { t: Date.now(), list: list };
   } catch (e) { if (!trendCache.list.length) throw e; trendCache.t = Date.now() - 45000; } // serve the old list, retry in 15 s
   return trendCache.list;
+};
+
+// ---- new pairs ----
+// Newest pools on Solana. GeckoTerminal lists them (one call, shared by everyone, every 30 s);
+// DexScreener's latest token profiles add more. Both only give addresses: the numbers come
+// from DexScreener so every row looks the same as the rest of the app.
+let newCache = { t: 0, list: [] }, newPending = null;
+const NEW_TTL_MS = 30000, NEW_MAX_AGE_MS = 24 * 3600000;
+
+async function newMints() {
+  const found = [];
+  const add = function (m) { if (exports.isMint(m) && found.indexOf(m) < 0) found.push(m); };
+  if (geckoWaiting < GECKO_MAX_QUEUE && Date.now() >= geckoCoolUntil) {
+    geckoWaiting++;
+    try {
+      const j = await gated(function () { stats.geckoCalls++; return http.getJson(GECKO + '/new_pools?page=1'); });
+      ((j && j.data) || []).forEach(function (p) {
+        const b = p.relationships && p.relationships.base_token && p.relationships.base_token.data;
+        if (b && typeof b.id === 'string') add(b.id.replace(/^solana_/, ''));
+      });
+    } catch (e) { if (/429/.test(e.message)) geckoCoolUntil = Date.now() + GECKO_COOLDOWN_MS; }
+    finally { geckoWaiting--; }
+  }
+  try {
+    stats.dexCalls++;
+    const prof = await http.getJson(DEX + '/token-profiles/latest/v1');
+    (prof || []).forEach(function (p) { if (p.chainId === 'solana') add(p.tokenAddress); });
+  } catch (e) { /* the other source may have worked */ }
+  return found;
+}
+
+exports.newPairs = async function () {
+  if (Date.now() - newCache.t < NEW_TTL_MS) return newCache.list;
+  if (newPending) return newPending;
+  newPending = (async function () {
+    try {
+      const mints = await newMints();
+      if (!mints.length) throw new Error('No data');
+      const snaps = await exports.prices(mints.slice(0, 60), 0);
+      const cut = Date.now() - NEW_MAX_AGE_MS;
+      const list = Object.keys(snaps).map(function (k) { return snaps[k]; })
+        .filter(function (s) { return s.createdAt > cut && s.liquidity >= 1000; })
+        .sort(function (a, b) { return b.createdAt - a.createdAt; }).slice(0, 40);
+      newCache = { t: Date.now(), list: list };
+    } catch (e) { if (!newCache.list.length) throw e; newCache.t = Date.now() - NEW_TTL_MS + 10000; } // keep the old list, retry in 10 s
+    return newCache.list;
+  })();
+  try { return await newPending; } finally { newPending = null; }
 };
 
 // ---- candles ----

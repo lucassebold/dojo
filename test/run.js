@@ -5,6 +5,7 @@ const http = require('http');
 const net = require('net');
 process.env.GECKO_SPACING_MS = '5';
 process.env.GECKO_COOLDOWN_MS = '80';
+process.env.WATCH_EVERY_MS = '40';
 process.env.DATA_DIR = require('path').join(require('os').tmpdir(), 'dojo-test-' + Date.now());
 const sim = require('../src/sim');
 const upstream = require('../src/http');
@@ -92,20 +93,23 @@ test('position limit and reset', function () {
 });
 
 // ---- market cache + HTTP API with a stubbed upstream ----
+const createdAt = {}, thin = {};   // per-mint overrides used by the new-pairs test
 function pairFor(mint, price, liq) {
-  return { chainId: 'solana', pairAddress: 'P' + mint.slice(0, 40), dexId: 'raydium', baseToken: { address: mint, symbol: mint.slice(0, 4), name: 'n' }, priceUsd: String(price), liquidity: { usd: liq }, txns: {}, volume: {}, priceChange: {} };
+  return { chainId: 'solana', pairAddress: 'P' + mint.slice(0, 40), dexId: 'raydium', baseToken: { address: mint, symbol: mint.slice(0, 4), name: 'n' }, priceUsd: String(price), liquidity: { usd: thin[mint] ? 100 : liq }, txns: {}, volume: {}, priceChange: {}, pairCreatedAt: createdAt[mint] || 0 };
 }
-let dexCalls = 0, geckoCalls = 0, dexDown = false, geckoLimited = false, price = 0.01;
+let dexCalls = 0, geckoCalls = 0, dexDown = false, geckoLimited = false, price = 0.01, newPools = [], profiles = [];
 upstream.getJson = async function (url) {
   if (/dexscreener/.test(url)) {
     dexCalls++;
     if (dexDown) throw new Error('HTTP 429 em api.dexscreener.com');
     if (/token-boosts/.test(url)) return [{ chainId: 'solana', tokenAddress: M2 }];
+    if (/token-profiles/.test(url)) return profiles.map(function (m) { return { chainId: 'solana', tokenAddress: m }; });
     if (/tokens\/v1/.test(url)) return url.split('/').pop().split(',').map(function (m) { return pairFor(m, price, 200000); });
     return { pairs: [pairFor(M2, price, 200000)] };
   }
   geckoCalls++;
   if (geckoLimited) throw new Error('HTTP 429 em api.geckoterminal.com');
+  if (/new_pools/.test(url)) return { data: newPools.map(function (m) { return { relationships: { base_token: { data: { id: 'solana_' + m } } } }; }) };
   return { data: { attributes: { ohlcv_list: [[2, 1, 2, 0.5, 1.5, 10], [1, 1, 2, 0.5, 1.5, 10]] } } };
 };
 const market = require('../src/market');
@@ -135,6 +139,32 @@ test('market: candles are cached, sorted and queued', async function () {
   assert.deepStrictEqual(a.map(function (c) { return c.time; }), [1, 2]);
   assert.strictEqual(b.length, 2);
   await assert.rejects(function () { return market.candles('bad address!', '15m'); });
+});
+
+test('market: new pairs are newest first, drop old and thin pools, and are cached', async function () {
+  const mk = function (c) { return 'N' + c + M.slice(2, 40); };
+  const A = mk('1'), B = mk('2'), C = mk('3'), D = mk('4');
+  const now = Date.now();
+  createdAt[A] = now - 5 * 60000; createdAt[B] = now - 3 * 86400000; createdAt[C] = now - 60 * 60000; createdAt[D] = now - 60000; thin[D] = true;
+  newPools = [A, B, D]; profiles = [C, 'not-a-mint'];
+  const list = await market.newPairs();
+  assert.deepStrictEqual(list.map(function (s) { return s.mint; }), [A, C], 'newest first; 3-day-old and thin pools dropped');
+  const before = dexCalls + geckoCalls;
+  await market.newPairs(); await market.newPairs();
+  assert.strictEqual(dexCalls + geckoCalls, before, 'repeat reads come from the cache');
+});
+
+test('market: the background watcher keeps looked-at tokens fresh', async function () {
+  const W = 'W2' + M.slice(2, 40);
+  price = 0.01;
+  await market.prices([W], 0);
+  const timer = market.startWatcher();
+  price = 0.05;
+  await new Promise(function (r) { setTimeout(r, 250); });
+  clearInterval(timer);
+  const got = await market.prices([W], 60000);   // would be the old 0.01 without the watcher
+  assert.strictEqual(got[W].price, 0.05);
+  price = 0.01;
 });
 
 test('market: a 429 from GeckoTerminal pauses upstream calls and answers "busy" fast, then recovers', async function () {

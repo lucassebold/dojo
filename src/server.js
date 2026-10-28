@@ -13,7 +13,7 @@ const PORT = Number(process.env.PORT) || 3100;
 const HOST = process.env.HOST || (ON_RAILWAY ? '0.0.0.0' : '127.0.0.1');
 const PUBLIC = path.join(__dirname, '..', 'public');
 const TRADE_PRICE_MAX_AGE_MS = 4000;   // a fill never uses a price older than this
-const VIEW_PRICE_MAX_AGE_MS = 12000;   // balances and the token page can be a little older
+const VIEW_PRICE_MAX_AGE_MS = 4000;   // balances and the token page can be a little older
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 
@@ -107,6 +107,8 @@ async function api(req, res, url) {
 
   if (p === '/api/trending' && m === 'GET') return send(res, 200, { tokens: await market.trending() });
 
+  if (p === '/api/new' && m === 'GET') return send(res, 200, { tokens: await market.newPairs() });
+
   if (p === '/api/search' && m === 'GET') {
     const term = String(q.get('q') || '').trim().slice(0, 80);
     if (term.length < 2) return send(res, 200, { tokens: [] });
@@ -193,6 +195,7 @@ const server = http.createServer(function (req, res) {
 exports.server = server;
 if (require.main === module) {
   store.load();
+  market.startWatcher();
   server.listen(PORT, HOST, function () { console.log('Dojo at http://' + HOST + ':' + PORT + '  (' + store.count() + ' players, start cash $' + sim.START_CASH + ', fee ' + sim.FEE_PCT + '%)'); });
   const bye = function () { store.flush(); process.exit(0); };
   process.on('SIGINT', bye); process.on('SIGTERM', bye);

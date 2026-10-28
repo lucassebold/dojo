@@ -64,11 +64,12 @@ function clearPage() {
 function route() {
   clearPage();
   const h = location.hash.replace(/^#/, '') || '/';
-  const nav = h === '/' || h.indexOf('/token/') === 0 ? 'home' : h === '/portfolio' ? 'portfolio' : h === '/leaderboard' ? 'board' : '';
+  const nav = h === '/' || h.indexOf('/token/') === 0 ? 'home' : h === '/new' ? 'new' : h === '/portfolio' ? 'portfolio' : h === '/leaderboard' ? 'board' : '';
   document.querySelectorAll('[data-nav]').forEach(function (a) { a.classList.toggle('on', a.getAttribute('data-nav') === nav); });
   window.scrollTo(0, 0);
   const m = /^\/token\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(h);
   if (m) return tokenPage(m[1]);
+  if (h === '/new') return newPairsPage();
   if (h === '/portfolio') return portfolioPage();
   if (h === '/leaderboard') return leaderboardPage();
   return homePage();
@@ -119,15 +120,51 @@ function homePage() {
   load(); every(60000, load);
 }
 
+// ---------- new pairs ----------
+function newPairsPage() {
+  let amt = 100;
+  try { amt = Number(localStorage.getItem('dojo_quickbuy')) || 100; } catch (e) { /* storage blocked */ }
+  view.innerHTML = '<div class="wrap"><div class="row" style="margin:22px 0 10px"><div><h2 style="margin:0">New Pairs</h2><span class="muted">Pools created in the last 24 hours, newest first. Very new tokens are the riskiest: practice here.</span></div>' +
+    '<label class="qb">Quick buy $<input id="qbAmt" inputmode="decimal" value="' + esc(amt) + '" aria-label="Quick buy amount in dollars"></label></div>' +
+    '<div id="np" class="list"><div class="empty">Loading new pairs...</div></div></div>';
+  $('#qbAmt').addEventListener('input', function () { try { localStorage.setItem('dojo_quickbuy', String(parseFloat($('#qbAmt').value) || 100)); } catch (e) { /* storage blocked */ } });
+  function row(s) {
+    const tx = s.buys24 + s.sells24, buyShare = tx ? Math.round(s.buys24 * 100 / tx) : 0;
+    return '<div class="np"><a class="np-main" href="#/token/' + esc(s.mint) + '">' + icon(s.icon) +
+      '<div class="n"><b>' + esc(s.symbol) + '</b><span>' + esc(s.name) + '</span></div>' +
+      '<div class="age" data-t="' + esc(s.createdAt) + '">' + esc(ago(s.createdAt).replace(' ago', '')) + '</div>' +
+      '<div class="r"><span class="muted">MC</span> <b>' + compact(s.marketCap) + '</b><br><span class="muted">Liq</span> ' + compact(s.liquidity) + '</div>' +
+      '<div class="r"><span class="muted">Vol 1h</span> <b>' + compact(s.volume.h1) + '</b><br><span class="muted">Txns</span> ' + tx + ' <span class="' + (buyShare >= 50 ? 'up' : 'down') + '">' + buyShare + '% buys</span></div>' +
+      '<div class="r ' + cls(s.change.h1) + '"><b>' + pct(s.change.h1) + '</b><br><span class="muted">1h</span></div></a>' +
+      '<button class="btn small qbtn" data-mint="' + esc(s.mint) + '" data-sym="' + esc(s.symbol) + '">&#9889; Buy</button></div>';
+  }
+  const load = function () {
+    api('/api/new').then(function (j) {
+      $('#np').innerHTML = j.tokens.length ? j.tokens.map(row).join('') : '<div class="empty">No new pairs to show right now.</div>';
+    }).catch(function (e) { if (!$('#np .np')) $('#np').innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; });
+  };
+  $('#np').addEventListener('click', function (e) {
+    const b = e.target.closest('.qbtn'); if (!b || b.disabled) return;
+    const usd = parseFloat(String($('#qbAmt').value).replace(',', '.'));
+    if (!isFinite(usd) || usd <= 0) return toast('Enter a quick buy amount.', true);
+    b.disabled = true;
+    api('/api/trade', { method: 'POST', body: { mint: b.getAttribute('data-mint'), side: 'buy', usd: usd } }).then(function (j) {
+      setMe(j.me); toast('Bought ' + qty(j.trade.qty) + ' ' + j.trade.symbol + ' for ' + money(j.trade.usd));
+    }).catch(function (err) { toast(err.message, true); }).then(function () { b.disabled = false; });
+  });
+  load(); every(15000, load);
+  every(1000, function () { Array.prototype.forEach.call(document.querySelectorAll('.age'), function (a) { a.textContent = ago(Number(a.getAttribute('data-t'))).replace(' ago', ''); }); });
+}
+
 // ---------- token page ----------
 function tokenPage(mint) {
   view.innerHTML = '<div class="tokpage"><div class="tokmain"><div id="thead" class="thead"><span class="muted">Loading...</span></div>' +
     '<div class="tfs" id="tfs"></div><div id="chart"></div><div class="tokinfo" id="tinfo"></div></div><aside class="tokside" id="side"></aside></div>';
-  let snap = null, res = '15m', series = null, lastBar = null, side = 'buy', amount = null, quoteSeq = 0, quoteT = null, busy = false;
+  let snap = null, res = '15m', series = null, vol = null, lastBar = null, side = 'buy', amount = null, quoteSeq = 0, quoteT = null, busy = false;
 
   ['1m', '5m', '15m', '1h', '4h', 'D'].forEach(function (r) {
     const b = document.createElement('button'); b.textContent = r === 'D' ? '1D' : r; b.className = r === res ? 'on' : '';
-    b.addEventListener('click', function () { res = r; Array.prototype.forEach.call($('#tfs').children, function (x) { x.classList.remove('on'); }); b.classList.add('on'); loadBars(true); });
+    b.addEventListener('click', function () { res = r; Array.prototype.forEach.call($('#tfs').children, function (x) { x.classList.remove('on'); }); b.classList.add('on'); lastBar = null; if (series) { series.setData([]); vol.setData([]); } liveCandle(); loadBars(true); });
     $('#tfs').appendChild(b);
   });
 
@@ -155,12 +192,26 @@ function tokenPage(mint) {
       if (series && snap.price) series.applyOptions({ priceFormat: fmt(snap.price) });
     });
   }
-  // Keeps the last candle moving with the live price (no extra API call: the price already arrives every 12 s).
+  // The chart exists from the first second and follows the live price (it arrives every 3 s, no extra
+  // API call). The history from GeckoTerminal is slow and rate limited, so it is poured in when it comes.
   const SECS = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, 'D': 86400 };
+  function ensureChart() {
+    if (chart || !snap) return;
+    const el = $('#chart');
+    chart = LightweightCharts.createChart(el, { height: 440, width: el.clientWidth, layout: { background: { color: '#0a0c10' }, textColor: '#8f98a8' }, grid: { vertLines: { color: '#10141b' }, horzLines: { color: '#10141b' } }, crosshair: { mode: 0 }, timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#232833' }, rightPriceScale: { borderColor: '#232833', scaleMargins: { top: 0.08, bottom: 0.28 } } });
+    series = chart.addCandlestickSeries({ upColor: '#22c55e', downColor: '#ef4444', borderVisible: false, wickUpColor: '#22c55e', wickDownColor: '#ef4444', priceFormat: fmt(snap.price || 0.0001) });
+    vol = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: '', lastValueVisible: false, priceLineVisible: false });
+    vol.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+    onResize = function () { if (chart) chart.applyOptions({ width: el.clientWidth }); };
+    window.addEventListener('resize', onResize);
+  }
   function liveCandle() {
-    if (!series || !lastBar || !(snap && snap.price > 0)) return;
+    if (!snap || !(snap.price > 0)) return;
+    ensureChart();
+    if (!series) return;
     const step = SECS[res] || 900, now = Math.floor(Date.now() / 1000), p = snap.price;
-    if (now >= lastBar.time + step) { lastBar = { time: lastBar.time + Math.floor((now - lastBar.time) / step) * step, open: lastBar.close, high: p, low: p, close: p }; }
+    if (!lastBar) { lastBar = { time: Math.floor(now / step) * step, open: p, high: p, low: p, close: p }; }
+    else if (now >= lastBar.time + step) { lastBar = { time: lastBar.time + Math.floor((now - lastBar.time) / step) * step, open: lastBar.close, high: p, low: p, close: p }; }
     else { lastBar = { time: lastBar.time, open: lastBar.open, high: Math.max(lastBar.high, p), low: Math.min(lastBar.low, p), close: p }; }
     series.update(lastBar);
   }
@@ -171,19 +222,21 @@ function tokenPage(mint) {
     const el = $('#chart');
     if (first) { const old = el.querySelector('.chartmsg'); if (old) old.remove(); }
     api('/api/bars?pair=' + encodeURIComponent(snap.pair) + '&res=' + res).then(function (j) {
-      if (!chart) {
-        chart = LightweightCharts.createChart(el, { height: 400, width: el.clientWidth, layout: { background: { color: '#0a0c10' }, textColor: '#8f98a8' }, grid: { vertLines: { color: '#171b23' }, horzLines: { color: '#171b23' } }, timeScale: { timeVisible: true, borderColor: '#232833' }, rightPriceScale: { borderColor: '#232833' } });
-        series = chart.addCandlestickSeries({ upColor: '#22c55e', downColor: '#ef4444', borderVisible: false, wickUpColor: '#22c55e', wickDownColor: '#ef4444', priceFormat: fmt(snap.price || 0.0001) });
-        onResize = function () { if (chart) chart.applyOptions({ width: el.clientWidth }); };
-        window.addEventListener('resize', onResize);
-      }
+      if (res !== askedRes) return;      // the user already switched period
+      ensureChart();
       const m = el.querySelector('.chartmsg'); if (m) m.remove();
-      if (!j.bars.length) { el.insertAdjacentHTML('beforeend', '<div class="chartmsg">No candles for this period yet.</div>'); }
-      series.setData(j.bars); lastBar = j.bars.length ? j.bars[j.bars.length - 1] : null; liveCandle(); if (first) chart.timeScale().fitContent();
+      if (j.bars.length) {
+        series.setData(j.bars);
+        vol.setData(j.bars.map(function (b) { return { time: b.time, value: b.volume || 0, color: b.close >= b.open ? '#22c55e55' : '#ef444455' }; }));
+        lastBar = j.bars[j.bars.length - 1];
+      }
+      liveCandle(); if (first) chart.timeScale().fitContent();
     }).catch(function (e) {
+      if (res !== askedRes) return;
       const busy = /busy/i.test(e.message);
-      if (!el.querySelector('.chartmsg')) el.insertAdjacentHTML('beforeend', '<div class="chartmsg">' + esc(e.message) + (busy ? ' Retrying...' : '') + '</div>');
-      if (busy && tries < 5) setTimeout(function () { if (el.isConnected && res === askedRes) loadBars(first, tries + 1); }, 7000);
+      // The live candle keeps running meanwhile; this note only says the older candles are still coming.
+      if (!el.querySelector('.chartmsg')) el.insertAdjacentHTML('beforeend', '<div class="chartmsg note">' + (busy ? 'Loading older candles... live price is already running.' : esc(e.message)) + '</div>');
+      if (busy && tries < 8) setTimeout(function () { if (el.isConnected && res === askedRes) loadBars(first, tries + 1); }, 7000);
     });
   }
 
@@ -244,7 +297,7 @@ function tokenPage(mint) {
   Promise.all([refreshMe(), loadSnap()]).then(function () { renderSide(false); loadBars(true); }).catch(function (e) {
     $('#thead').innerHTML = '<span class="down">' + esc(e.message) + '</span>';
   });
-  every(12000, function () { loadSnap().catch(function () {}); });
+  every(3000, function () { loadSnap().catch(function () {}); });
   every(45000, function () { loadBars(false); });
 }
 
