@@ -104,4 +104,5 @@ td.r, th.r { text-align: right; }
   .tokpage { grid-template-columns: 1fr; } .tokmain { border-right: 0; }
   .stats { grid-template-columns: repeat(2, 1fr); } .hero h1 { font-size: 32px; }
   .top nav { display: none; } .top { gap: 10px; }
+  .balance .muted { display: none; } .search { min-width: 120px; }
 }

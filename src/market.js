@@ -108,7 +108,14 @@ exports.trending = async function () {
 const RES = { '1m': ['minute', 1, 30000], '5m': ['minute', 5, 60000], '15m': ['minute', 15, 90000], '1h': ['hour', 1, 120000], '4h': ['hour', 4, 180000], 'D': ['day', 1, 300000] };
 const candleCache = {};
 let gate = Promise.resolve();
-const GECKO_SPACING_MS = Number(process.env.GECKO_SPACING_MS) || 2300;
+// GeckoTerminal's free tier allows roughly 10 calls a minute per IP, so calls are spaced 6 s apart.
+// If it still answers 429 we pause 20 s, and if too many chart requests are already waiting we answer "busy"
+// straight away instead of leaving the user hanging.
+const GECKO_SPACING_MS = Number(process.env.GECKO_SPACING_MS) || 6000;
+const GECKO_COOLDOWN_MS = Number(process.env.GECKO_COOLDOWN_MS) || 20000;
+const GECKO_MAX_QUEUE = 6;
+const BUSY = 'Chart data is busy right now. Try again in a few seconds.';
+let geckoWaiting = 0, geckoCoolUntil = 0;
 
 // All GeckoTerminal calls go through one queue with a minimum gap between them.
 function gated(fn) {
@@ -123,6 +130,11 @@ exports.candles = async function (pair, res) {
   const key = pair + ':' + res, hit = candleCache[key];
   if (hit && Date.now() - hit.t < r[2]) return hit.v;
   if (hit && hit.pending) return hit.pending;
+  if (geckoWaiting >= GECKO_MAX_QUEUE || Date.now() < geckoCoolUntil) {
+    if (hit && hit.v) return hit.v;          // better an older chart than none
+    throw new Error(BUSY);
+  }
+  geckoWaiting++;
   const job = gated(async function () {
     stats.geckoCalls++;
     const j = await http.getJson(GECKO + '/pools/' + pair + '/ohlcv/' + r[0] + '?aggregate=' + r[1] + '&limit=300');
@@ -130,13 +142,18 @@ exports.candles = async function (pair, res) {
     return list.map(function (c) { return { time: c[0], open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5] }; })
       .sort(function (a, b) { return a.time - b.time; });
   }).then(function (v) {
+    geckoWaiting--;
     candleCache[key] = { t: Date.now(), v: v };
     if (Object.keys(candleCache).length > 400) { Object.keys(candleCache).forEach(function (k) { if (Date.now() - candleCache[k].t > 600000) delete candleCache[k]; }); }
     return v;
+  }, function (e) {
+    geckoWaiting--;
+    if (/429/.test(e.message)) geckoCoolUntil = Date.now() + GECKO_COOLDOWN_MS;
+    throw e;
   }).catch(function (e) {
     if (hit && hit.v) { candleCache[key] = { t: Date.now() - r[2] + 15000, v: hit.v }; return hit.v; } // stale copy, retry in 15 s
     delete candleCache[key];
-    throw new Error(/429/.test(e.message) ? 'Chart data is busy right now. Try again in a few seconds.' : e.message);
+    throw new Error(/429/.test(e.message) ? BUSY : e.message);
   });
   candleCache[key] = { t: 0, v: hit ? hit.v : null, pending: job };
   return job;

@@ -165,7 +165,8 @@ function tokenPage(mint) {
     series.update(lastBar);
   }
   function fmt(p) { const d = p >= 1 ? 4 : Math.min(10, Math.ceil(-Math.log10(p)) + 4); return { type: 'price', precision: d, minMove: Math.pow(10, -d) }; }
-  function loadBars(first) {
+  function loadBars(first, tries) {
+    tries = tries || 0; const askedRes = res;
     if (!snap) return;
     const el = $('#chart');
     if (first) { const old = el.querySelector('.chartmsg'); if (old) old.remove(); }
@@ -179,7 +180,11 @@ function tokenPage(mint) {
       const m = el.querySelector('.chartmsg'); if (m) m.remove();
       if (!j.bars.length) { el.insertAdjacentHTML('beforeend', '<div class="chartmsg">No candles for this period yet.</div>'); }
       series.setData(j.bars); lastBar = j.bars.length ? j.bars[j.bars.length - 1] : null; liveCandle(); if (first) chart.timeScale().fitContent();
-    }).catch(function (e) { if (!el.querySelector('.chartmsg')) el.insertAdjacentHTML('beforeend', '<div class="chartmsg">' + esc(e.message) + '</div>'); });
+    }).catch(function (e) {
+      const busy = /busy/i.test(e.message);
+      if (!el.querySelector('.chartmsg')) el.insertAdjacentHTML('beforeend', '<div class="chartmsg">' + esc(e.message) + (busy ? ' Retrying...' : '') + '</div>');
+      if (busy && tries < 5) setTimeout(function () { if (el.isConnected && res === askedRes) loadBars(first, tries + 1); }, 7000);
+    });
   }
 
   // ---- trade panel ----

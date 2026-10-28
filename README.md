@@ -23,3 +23,7 @@ Sem carteira, sem login, sem dependências, sem build (Node 12+).
 - Sem cache = estouro do limite grátis do GeckoTerminal (~30/min). O cache de candles (30 s a 5 min) evita isso.
 - Id de jogador é anônimo: limpar o navegador perde a conta. Ranking aceita apelidos livres (sanitizados).
 - Atribuição obrigatória: "Charts: GeckoTerminal" está no rodapé.
+
+## Testes
+- `node test/run.js`: 13 testes unitarios/API, sem rede.
+- `test/scenarios_live.js`: 22 cenarios de usuario contra servidor real (ver cabecalho do arquivo). Deve rodar com pasta de dados limpa.

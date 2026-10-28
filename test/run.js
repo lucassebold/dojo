@@ -4,6 +4,7 @@ const assert = require('assert');
 const http = require('http');
 const net = require('net');
 process.env.GECKO_SPACING_MS = '5';
+process.env.GECKO_COOLDOWN_MS = '80';
 process.env.DATA_DIR = require('path').join(require('os').tmpdir(), 'dojo-test-' + Date.now());
 const sim = require('../src/sim');
 const upstream = require('../src/http');
@@ -94,7 +95,7 @@ test('position limit and reset', function () {
 function pairFor(mint, price, liq) {
   return { chainId: 'solana', pairAddress: 'P' + mint.slice(0, 40), dexId: 'raydium', baseToken: { address: mint, symbol: mint.slice(0, 4), name: 'n' }, priceUsd: String(price), liquidity: { usd: liq }, txns: {}, volume: {}, priceChange: {} };
 }
-let dexCalls = 0, geckoCalls = 0, dexDown = false, price = 0.01;
+let dexCalls = 0, geckoCalls = 0, dexDown = false, geckoLimited = false, price = 0.01;
 upstream.getJson = async function (url) {
   if (/dexscreener/.test(url)) {
     dexCalls++;
@@ -104,6 +105,7 @@ upstream.getJson = async function (url) {
     return { pairs: [pairFor(M2, price, 200000)] };
   }
   geckoCalls++;
+  if (geckoLimited) throw new Error('HTTP 429 em api.geckoterminal.com');
   return { data: { attributes: { ohlcv_list: [[2, 1, 2, 0.5, 1.5, 10], [1, 1, 2, 0.5, 1.5, 10]] } } };
 };
 const market = require('../src/market');
@@ -133,6 +135,31 @@ test('market: candles are cached, sorted and queued', async function () {
   assert.deepStrictEqual(a.map(function (c) { return c.time; }), [1, 2]);
   assert.strictEqual(b.length, 2);
   await assert.rejects(function () { return market.candles('bad address!', '15m'); });
+});
+
+test('market: a 429 from GeckoTerminal pauses upstream calls and answers "busy" fast, then recovers', async function () {
+  const P1 = 'Q' + M.slice(1, 40), P2 = 'R' + M.slice(1, 40);
+  geckoLimited = true; geckoCalls = 0;
+  await assert.rejects(function () { return market.candles(P1, '5m'); }, /busy/i);
+  assert.strictEqual(geckoCalls, 1);
+  const t0 = Date.now();
+  await assert.rejects(function () { return market.candles(P2, '5m'); }, /busy/i);   // during the pause: no upstream call
+  assert.strictEqual(geckoCalls, 1);
+  assert.ok(Date.now() - t0 < 50);
+  geckoLimited = false;
+  await new Promise(function (r) { setTimeout(r, 120); });
+  const ok = await market.candles(P2, '5m');
+  assert.ok(ok.length > 0);
+});
+
+test('market: too many chart requests waiting are refused instead of queued forever', async function () {
+  const mk = function (i) { return 'ABCDEFGHJ'.charAt(i) + 'Z' + M.slice(2, 40); };
+  const calls = [];
+  for (let i = 0; i < 9; i++) calls.push(market.candles(mk(i), '1h').then(function () { return 'ok'; }, function (e) { return /busy/i.test(e.message) ? 'busy' : 'err:' + e.message; }));
+  const out = await Promise.all(calls);
+  assert.ok(out.filter(function (x) { return x === 'busy'; }).length >= 1, out.join(','));
+  assert.ok(out.filter(function (x) { return x === 'ok'; }).length >= 1, out.join(','));
+  assert.ok(!out.some(function (x) { return /^err/.test(x); }), out.join(','));
 });
 
 function freePort() { return new Promise(function (r) { const s = net.createServer(); s.listen(0, '127.0.0.1', function () { const p = s.address().port; s.close(function () { r(p); }); }); }); }
