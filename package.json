@@ -1,0 +1,8 @@
+{
+  "name": "dojo",
+  "version": "0.1.0",
+  "description": "Practice memecoin trading with fake money on real Solana prices and liquidity",
+  "main": "src/server.js",
+  "private": true,
+  "scripts": { "start": "node src/server.js", "test": "node test/run.js" }
+}

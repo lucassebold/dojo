@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dojo - Practice memecoin trading</title>
+  <meta name="description" content="Practice trading Solana memecoins with $10,000 of fake money, real prices and real liquidity. No wallet, no risk.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%23ff7a18'/%3E%3Cpath d='M6 7h7a5 5 0 010 10H6z' fill='%230a0c10'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="#/">
+      <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffb703"/><stop offset="1" stop-color="#ff4d4d"/></linearGradient></defs><rect width="24" height="24" rx="6" fill="url(#lg)"/><path d="M6 7h7a5 5 0 010 10H6z" fill="#0a0c10"/></svg>
+      <span>Dojo</span>
+    </a>
+    <nav>
+      <a href="#/" data-nav="home">Markets</a>
+      <a href="#/portfolio" data-nav="portfolio">Portfolio</a>
+      <a href="#/leaderboard" data-nav="board">Leaderboard</a>
+    </nav>
+    <form id="searchForm" class="search" autocomplete="off">
+      <input id="searchInput" placeholder="Search a token or paste an address" aria-label="Search token">
+      <div id="searchResults" class="results" hidden></div>
+    </form>
+    <a id="balance" class="balance" href="#/portfolio" title="Your practice account"><span class="muted">Equity</span> <b id="balEq">$10,000.00</b> <i id="balPnl"></i></a>
+  </header>
+  <main id="view"></main>
+  <footer class="foot">Practice money only. Nothing here is financial advice and no real orders are ever sent. Prices: DexScreener. Charts: GeckoTerminal.</footer>
+  <div id="toast" class="toast" hidden></div>
+  <script src="/vendor/lightweight-charts.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
