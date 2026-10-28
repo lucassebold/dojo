@@ -123,7 +123,7 @@ function homePage() {
 function tokenPage(mint) {
   view.innerHTML = '<div class="tokpage"><div class="tokmain"><div id="thead" class="thead"><span class="muted">Loading...</span></div>' +
     '<div class="tfs" id="tfs"></div><div id="chart"></div><div class="tokinfo" id="tinfo"></div></div><aside class="tokside" id="side"></aside></div>';
-  let snap = null, res = '15m', series = null, side = 'buy', amount = null, quoteSeq = 0, quoteT = null, busy = false;
+  let snap = null, res = '15m', series = null, lastBar = null, side = 'buy', amount = null, quoteSeq = 0, quoteT = null, busy = false;
 
   ['1m', '5m', '15m', '1h', '4h', 'D'].forEach(function (r) {
     const b = document.createElement('button'); b.textContent = r === 'D' ? '1D' : r; b.className = r === res ? 'on' : '';
@@ -151,9 +151,18 @@ function tokenPage(mint) {
   }
   function loadSnap() {
     return api('/api/token/' + mint).then(function (j) {
-      snap = j.token; head(); info(j.risk); renderSide(false);
+      snap = j.token; head(); info(j.risk); if (!$('#amt')) renderSide(false); liveCandle();
       if (series && snap.price) series.applyOptions({ priceFormat: fmt(snap.price) });
     });
+  }
+  // Keeps the last candle moving with the live price (no extra API call: the price already arrives every 12 s).
+  const SECS = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, 'D': 86400 };
+  function liveCandle() {
+    if (!series || !lastBar || !(snap && snap.price > 0)) return;
+    const step = SECS[res] || 900, now = Math.floor(Date.now() / 1000), p = snap.price;
+    if (now >= lastBar.time + step) { lastBar = { time: lastBar.time + Math.floor((now - lastBar.time) / step) * step, open: lastBar.close, high: p, low: p, close: p }; }
+    else { lastBar = { time: lastBar.time, open: lastBar.open, high: Math.max(lastBar.high, p), low: Math.min(lastBar.low, p), close: p }; }
+    series.update(lastBar);
   }
   function fmt(p) { const d = p >= 1 ? 4 : Math.min(10, Math.ceil(-Math.log10(p)) + 4); return { type: 'price', precision: d, minMove: Math.pow(10, -d) }; }
   function loadBars(first) {
@@ -169,7 +178,7 @@ function tokenPage(mint) {
       }
       const m = el.querySelector('.chartmsg'); if (m) m.remove();
       if (!j.bars.length) { el.insertAdjacentHTML('beforeend', '<div class="chartmsg">No candles for this period yet.</div>'); }
-      series.setData(j.bars); if (first) chart.timeScale().fitContent();
+      series.setData(j.bars); lastBar = j.bars.length ? j.bars[j.bars.length - 1] : null; liveCandle(); if (first) chart.timeScale().fitContent();
     }).catch(function (e) { if (!el.querySelector('.chartmsg')) el.insertAdjacentHTML('beforeend', '<div class="chartmsg">' + esc(e.message) + '</div>'); });
   }
 
