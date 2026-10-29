@@ -1,239 +1,123 @@
 'use strict';
-// Free public market data behind shared caches. Every player reads the same cached copy, so the
-// number of upstream calls depends on how many TOKENS are in play, not on how many people are online.
-//   DexScreener  -> prices, liquidity, volume (batched, 30 mints per call)
-//   GeckoTerminal -> candles (strict free limit: calls are queued and cached)
-// If an upstream call fails we serve the last good copy instead of an error.
-const http = require('./http');
+// The practice market the rest of the app talks to. Real tokens, simulated prices (see world.js).
+// The only network use is slow: a refresh of the real prices every minute (the "anchor"), new tokens every 3 minutes,
+// and a lookup when somebody opens or searches a token that is not in the market yet. Trading and charts never wait on it.
+const fs = require('fs');
+const path = require('path');
+const feed = require('./feed');
+const World = require('./world');
 
-const DEX = 'https://api.dexscreener.com';
-const GECKO = 'https://api.geckoterminal.com/api/v2/networks/solana';
-const MINT_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
-exports.isMint = function (s) { return typeof s === 'string' && MINT_RE.test(s); };
+const world = World.create({});
+exports._world = world;
+exports.isMint = feed.isMint;
 
-function num(x) { const n = Number(x); return isFinite(n) ? n : 0; }
+const MAX_TOKENS = 160, MIN_LIQUIDITY = 1000, TREND_MAX = 60, NEW_MAX = 40, NEW_MAX_AGE_MS = 24 * 3600000;
+const ANCHOR_EVERY_MS = 60000, DISCOVER_EVERY_MS = 180000, CACHE_EVERY_MS = 300000;
+const CACHE_FILE = path.join(process.env.DATA_DIR || path.join(__dirname, '..', 'data'), 'universe.json');
 
-function toSnapshot(p) {
-  const tx = p.txns || {}, v = p.volume || {}, c = p.priceChange || {};
-  return {
-    mint: p.baseToken.address, symbol: (p.baseToken.symbol || '?').trim().slice(0, 14), name: (p.baseToken.name || '').trim().slice(0, 40),
-    pair: p.pairAddress, dex: p.dexId, price: num(p.priceUsd), liquidity: num(p.liquidity && p.liquidity.usd), marketCap: num(p.marketCap || p.fdv),
-    change: { m5: num(c.m5), h1: num(c.h1), h6: num(c.h6), h24: num(c.h24) },
-    volume: { m5: num(v.m5), h1: num(v.h1), h6: num(v.h6), h24: num(v.h24) },
-    buys24: num(tx.h24 && tx.h24.buys), sells24: num(tx.h24 && tx.h24.sells),
-    createdAt: p.pairCreatedAt || 0, icon: (p.info && p.info.imageUrl) || null, t: Date.now()
-  };
-}
-
-// For each mint keep the pair with the most liquidity.
-function bestPairs(pairs) {
-  const best = {};
-  (pairs || []).forEach(function (p) {
-    if (!p || p.chainId !== 'solana' || !p.baseToken) return;
-    const k = p.baseToken.address, liq = num(p.liquidity && p.liquidity.usd);
-    if (!best[k] || liq > num(best[k].liquidity && best[k].liquidity.usd)) best[k] = p;
-  });
-  return Object.keys(best).map(function (k) { return toSnapshot(best[k]); });
-}
-
-// ---- prices ----
-const priceCache = {};
-const stats = { dexCalls: 0, geckoCalls: 0, priceHits: 0 };
+const stats = { tokens: 0, anchorRefreshes: 0, dexCalls: 0 };
+Object.defineProperty(stats, 'tokens', { get: function () { return world.size(); }, enumerable: true });
+Object.defineProperty(stats, 'dexCalls', { get: function () { return feed.stats.calls; }, enumerable: true });
 exports.stats = stats;
 
-function prune() {
-  const keys = Object.keys(priceCache);
-  if (keys.length < 3000) return;
-  const cut = Date.now() - 3600000;
-  keys.forEach(function (k) { if (priceCache[k].t < cut) delete priceCache[k]; });
-}
+let pinned = function () { return {}; };     // mints somebody holds: never removed from the market
+exports.setPinned = function (fn) { pinned = fn; };
 
-// Tokens somebody looked at recently are refreshed in the background (see startWatcher), so the
-// token page and the fills always find a fresh price in the cache instead of waiting on DexScreener.
-const watched = {};
-const WATCH_FOR_MS = 45000, WATCH_MAX_PER_TICK = 90;
-const WATCH_EVERY_MS = Number(process.env.WATCH_EVERY_MS) || 2500;
-let watching = false;
-
-async function refresh(chunk) {
-  stats.dexCalls++;
-  const pairs = await http.getJson(DEX + '/tokens/v1/solana/' + chunk.join(','));
-  bestPairs(pairs).forEach(function (s) { priceCache[s.mint] = s; });
-}
-
-exports.startWatcher = function () {
-  const timer = setInterval(async function () {
-    if (watching) return;
-    watching = true;
-    try {
-      const now = Date.now();
-      const list = Object.keys(watched).filter(function (m) {
-        if (now - watched[m] > WATCH_FOR_MS) { delete watched[m]; return false; }
-        return !priceCache[m] || now - priceCache[m].t > WATCH_EVERY_MS - 500;
-      }).sort(function (a, b) { return watched[b] - watched[a]; }).slice(0, WATCH_MAX_PER_TICK);
-      for (let i = 0; i < list.length; i += 30) { try { await refresh(list.slice(i, i + 30)); } catch (e) { /* next tick tries again */ } }
-    } finally { watching = false; }
-  }, WATCH_EVERY_MS);
-  if (timer.unref) timer.unref();
-  return timer;
-};
-
-// maxAgeMs: how old a cached price may be. Returns { mint: snapshot } for the mints that exist.
-exports.prices = async function (mints, maxAgeMs) {
-  const out = {}, need = [], now = Date.now();
-  mints.forEach(function (m) {
-    if (exports.isMint(m)) watched[m] = now;
-    const c = priceCache[m];
-    if (c && now - c.t <= maxAgeMs) { out[m] = c; stats.priceHits++; } else if (exports.isMint(m)) need.push(m);
-  });
-  let failed = null;
-  for (let i = 0; i < need.length; i += 30) {
-    const chunk = need.slice(i, i + 30);
-    try {
-      stats.dexCalls++;
-      const pairs = await http.getJson(DEX + '/tokens/v1/solana/' + chunk.join(','));
-      bestPairs(pairs).forEach(function (s) { priceCache[s.mint] = s; });
-    } catch (e) { failed = e; }
+exports.prices = async function (mints) {
+  const out = {}, missing = [], now = Date.now();
+  mints.forEach(function (m) { if (world.has(m)) world.touch(m, now); else if (feed.isMint(m)) missing.push(m); });
+  if (missing.length) {
+    const real = await feed.snapshots(missing);       // a real token we have not seen yet: add it with its real numbers
+    Object.keys(real).forEach(function (k) { world.add(real[k], Date.now()); });
   }
-  need.forEach(function (m) { if (priceCache[m]) out[m] = priceCache[m]; });
-  if (failed && need.length && !need.some(function (m) { return out[m]; })) throw failed;
-  prune();
+  mints.forEach(function (m) { const s = world.snapshot(m); if (s) out[m] = s; });
   return out;
 };
 
-exports.search = (function () {
-  const cache = {};
-  return async function (q) {
-    const key = q.toLowerCase();
-    const hit = cache[key];
-    if (hit && Date.now() - hit.t < 20000) return hit.v;
-    let list;
-    try {
-      stats.dexCalls++;
-      const r = await http.getJson(DEX + '/latest/dex/search?q=' + encodeURIComponent(q));
-      list = bestPairs(r.pairs).sort(function (a, b) { return b.liquidity - a.liquidity; }).slice(0, 12);
-    } catch (e) { if (hit) return hit.v; throw e; }
-    list.forEach(function (s) { priceCache[s.mint] = s; });
-    cache[key] = { t: Date.now(), v: list };
-    if (Object.keys(cache).length > 500) { Object.keys(cache).forEach(function (k) { delete cache[k]; }); }
-    return list;
-  };
-})();
-
-let trendCache = { t: 0, list: [] };
-exports.trending = async function () {
-  if (Date.now() - trendCache.t < 60000) return trendCache.list;
-  try {
-    stats.dexCalls++;
-    const boosts = await http.getJson(DEX + '/token-boosts/top/v1');
-    const mints = [];
-    boosts.forEach(function (b) { if (b.chainId === 'solana' && exports.isMint(b.tokenAddress) && mints.indexOf(b.tokenAddress) < 0) mints.push(b.tokenAddress); });
-    const snaps = await exports.prices(mints.slice(0, 30), 0);
-    const list = mints.map(function (m) { return snaps[m]; }).filter(function (s) { return s && s.liquidity >= 1000; }).slice(0, 24);
-    trendCache = { t: Date.now(), list: list };
-  } catch (e) { if (!trendCache.list.length) throw e; trendCache.t = Date.now() - 45000; } // serve the old list, retry in 15 s
-  return trendCache.list;
+exports.search = async function (q) {
+  const found = await feed.search(q);
+  found.forEach(function (real) { world.add(real, Date.now()); });
+  return found.map(function (r) { return world.snapshot(r.mint); }).filter(Boolean).sort(function (a, b) { return b.liquidity - a.liquidity; });
 };
 
-// ---- new pairs ----
-// Newest pools on Solana. GeckoTerminal lists them (one call, shared by everyone, every 30 s);
-// DexScreener's latest token profiles add more. Both only give addresses: the numbers come
-// from DexScreener so every row looks the same as the rest of the app.
-let newCache = { t: 0, list: [] }, newPending = null;
-const NEW_TTL_MS = 30000, NEW_MAX_AGE_MS = 24 * 3600000;
-
-async function newMints() {
-  const found = [];
-  const add = function (m) { if (exports.isMint(m) && found.indexOf(m) < 0) found.push(m); };
-  if (geckoWaiting < GECKO_MAX_QUEUE && Date.now() >= geckoCoolUntil) {
-    geckoWaiting++;
-    try {
-      const j = await gated(function () { stats.geckoCalls++; return http.getJson(GECKO + '/new_pools?page=1'); });
-      ((j && j.data) || []).forEach(function (p) {
-        const b = p.relationships && p.relationships.base_token && p.relationships.base_token.data;
-        if (b && typeof b.id === 'string') add(b.id.replace(/^solana_/, ''));
-      });
-    } catch (e) { if (/429/.test(e.message)) geckoCoolUntil = Date.now() + GECKO_COOLDOWN_MS; }
-    finally { geckoWaiting--; }
-  }
-  try {
-    stats.dexCalls++;
-    const prof = await http.getJson(DEX + '/token-profiles/latest/v1');
-    (prof || []).forEach(function (p) { if (p.chainId === 'solana') add(p.tokenAddress); });
-  } catch (e) { /* the other source may have worked */ }
-  return found;
-}
+exports.trending = async function () {
+  return world.list().filter(function (s) { return s.liquidity >= MIN_LIQUIDITY; }).sort(function (a, b) { return b.volume.h1 - a.volume.h1; }).slice(0, TREND_MAX);
+};
 
 exports.newPairs = async function () {
-  if (Date.now() - newCache.t < NEW_TTL_MS) return newCache.list;
-  if (newPending) return newPending;
-  newPending = (async function () {
-    try {
-      const mints = await newMints();
-      if (!mints.length) throw new Error('No data');
-      const snaps = await exports.prices(mints.slice(0, 60), 0);
-      const cut = Date.now() - NEW_MAX_AGE_MS;
-      const list = Object.keys(snaps).map(function (k) { return snaps[k]; })
-        .filter(function (s) { return s.createdAt > cut && s.liquidity >= 1000; })
-        .sort(function (a, b) { return b.createdAt - a.createdAt; }).slice(0, 40);
-      newCache = { t: Date.now(), list: list };
-    } catch (e) { if (!newCache.list.length) throw e; newCache.t = Date.now() - NEW_TTL_MS + 10000; } // keep the old list, retry in 10 s
-    return newCache.list;
-  })();
-  try { return await newPending; } finally { newPending = null; }
+  const cut = Date.now() - NEW_MAX_AGE_MS;
+  return world.list().filter(function (s) { return s.createdAt > cut && s.liquidity >= MIN_LIQUIDITY; }).sort(function (a, b) { return b.createdAt - a.createdAt; }).slice(0, NEW_MAX);
 };
 
-// ---- candles ----
-const RES = { '1m': ['minute', 1, 30000], '5m': ['minute', 5, 60000], '15m': ['minute', 15, 90000], '1h': ['hour', 1, 120000], '4h': ['hour', 4, 180000], 'D': ['day', 1, 300000] };
-const candleCache = {};
-let gate = Promise.resolve();
-// GeckoTerminal's free tier allows roughly 10 calls a minute per IP, so calls are spaced 6 s apart.
-// If it still answers 429 we pause 20 s, and if too many chart requests are already waiting we answer "busy"
-// straight away instead of leaving the user hanging.
-const GECKO_SPACING_MS = Number(process.env.GECKO_SPACING_MS) || 6000;
-const GECKO_COOLDOWN_MS = Number(process.env.GECKO_COOLDOWN_MS) || 20000;
-const GECKO_MAX_QUEUE = 6;
-const BUSY = 'Chart data is busy right now. Try again in a few seconds.';
-let geckoWaiting = 0, geckoCoolUntil = 0;
+exports.candles = async function (pair, res, limit) {
+  if (!feed.isMint(pair)) throw new Error('Invalid pair');
+  const mint = world.mintOfPair(pair);
+  if (!mint) throw new Error('Unknown pair');
+  return world.bars(mint, res, limit);
+};
 
-// All GeckoTerminal calls go through one queue with a minimum gap between them.
-function gated(fn) {
-  const run = gate.then(fn);
-  gate = run.catch(function () {}).then(function () { return new Promise(function (r) { setTimeout(r, GECKO_SPACING_MS); }); });
-  return run;
+// ---- keeping the market stocked ----
+function evict() {
+  const held = pinned();
+  while (world.size() > MAX_TOKENS) {
+    const loose = world.mints().filter(function (m) { return !held[m]; }).sort(function (a, b) { return world.get(a).viewedAt - world.get(b).viewedAt; });
+    if (!loose.length) return;
+    world.remove(loose[0]);
+  }
 }
 
-exports.candles = async function (pair, res) {
-  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(pair)) throw new Error('Invalid pair');
-  const r = RES[res] || RES['15m'];
-  const key = pair + ':' + res, hit = candleCache[key];
-  if (hit && Date.now() - hit.t < r[2]) return hit.v;
-  if (hit && hit.pending) return hit.pending;
-  if (geckoWaiting >= GECKO_MAX_QUEUE || Date.now() < geckoCoolUntil) {
-    if (hit && hit.v) return hit.v;          // better an older chart than none
-    throw new Error(BUSY);
-  }
-  geckoWaiting++;
-  const job = gated(async function () {
-    stats.geckoCalls++;
-    const j = await http.getJson(GECKO + '/pools/' + pair + '/ohlcv/' + r[0] + '?aggregate=' + r[1] + '&limit=300');
-    const list = (j.data && j.data.attributes && j.data.attributes.ohlcv_list) || [];
-    return list.map(function (c) { return { time: c[0], open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5] }; })
-      .sort(function (a, b) { return a.time - b.time; });
-  }).then(function (v) {
-    geckoWaiting--;
-    candleCache[key] = { t: Date.now(), v: v };
-    if (Object.keys(candleCache).length > 400) { Object.keys(candleCache).forEach(function (k) { if (Date.now() - candleCache[k].t > 600000) delete candleCache[k]; }); }
-    return v;
-  }, function (e) {
-    geckoWaiting--;
-    if (/429/.test(e.message)) geckoCoolUntil = Date.now() + GECKO_COOLDOWN_MS;
-    throw e;
-  }).catch(function (e) {
-    if (hit && hit.v) { candleCache[key] = { t: Date.now() - r[2] + 15000, v: hit.v }; return hit.v; } // stale copy, retry in 15 s
-    delete candleCache[key];
-    throw new Error(/429/.test(e.message) ? BUSY : e.message);
-  });
-  candleCache[key] = { t: 0, v: hit ? hit.v : null, pending: job };
-  return job;
+async function refreshAnchors() {
+  const mints = world.mints();
+  if (!mints.length) return;
+  try {
+    const real = await feed.snapshots(mints);
+    Object.keys(real).forEach(function (k) { world.setReal(k, real[k], Date.now()); });
+    stats.anchorRefreshes++;
+  } catch (e) { /* keep simulating around the last anchors */ }
+}
+
+async function discoverNow() {
+  try {
+    const fresh = (await feed.discover()).filter(function (m) { return !world.has(m); }).slice(0, 90);
+    if (fresh.length) {
+      const real = await feed.snapshots(fresh);
+      Object.keys(real).forEach(function (k) { if (real[k].liquidity >= MIN_LIQUIDITY) world.add(real[k], Date.now()); });
+      evict();
+    }
+  } catch (e) { /* try again in 3 minutes */ }
+}
+
+// The last real numbers are kept on disk, so a restart while DexScreener is down still has a market to show.
+function saveCache() {
+  try {
+    const rows = world.mints().map(function (m) {
+      const t = world.get(m);
+      return Object.assign({ mint: t.mint, symbol: t.symbol, name: t.name, icon: t.icon, pair: t.pair, dex: t.dex, createdAt: t.createdAt }, t.real);
+    });
+    fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
+    fs.writeFileSync(CACHE_FILE + '.tmp', JSON.stringify(rows));
+    fs.renameSync(CACHE_FILE + '.tmp', CACHE_FILE);
+  } catch (e) { /* the cache is only a convenience */ }
+}
+function loadCache() {
+  try {
+    JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8')).forEach(function (s) { if (s && feed.isMint(s.mint)) world.add(s, Date.now()); });
+  } catch (e) { /* no cache yet */ }
+}
+
+exports.start = function () {
+  loadCache();
+  const timers = [];
+  timers.push(setInterval(function () { world.step(Date.now()); }, 1000));
+  timers.push(setInterval(function () { refreshAnchors(); }, ANCHOR_EVERY_MS));
+  timers.push(setInterval(function () { discoverNow(); }, DISCOVER_EVERY_MS));
+  timers.push(setInterval(saveCache, CACHE_EVERY_MS));
+  timers.forEach(function (t) { if (t.unref) t.unref(); });
+  discoverNow().then(function () { if (world.size()) saveCache(); });
+  return timers;
 };
+exports.stop = function (timers) { (timers || []).forEach(clearInterval); };
+exports.flush = saveCache;
+exports._tick = function (now) { world.step(now); };
+exports._refresh = refreshAnchors;
+exports._discover = discoverNow;

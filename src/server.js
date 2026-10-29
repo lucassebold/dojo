@@ -12,8 +12,10 @@ const ON_RAILWAY = !!(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PRO
 const PORT = Number(process.env.PORT) || 3100;
 const HOST = process.env.HOST || (ON_RAILWAY ? '0.0.0.0' : '127.0.0.1');
 const PUBLIC = path.join(__dirname, '..', 'public');
-const TRADE_PRICE_MAX_AGE_MS = 4000;   // a fill never uses a price older than this
-const VIEW_PRICE_MAX_AGE_MS = 4000;   // balances and the token page can be a little older
+// Prices come from the simulated market (src/world.js), which moves every second in memory: there is no price age to manage.
+const TRADE_PRICE_MAX_AGE_MS = 0, VIEW_PRICE_MAX_AGE_MS = 0;   // kept for market.prices(mints, maxAge); the simulation ignores it
+
+function heldMints() { const s = {}; store.each(function (k, a) { Object.keys(a.positions).forEach(function (m) { s[m] = 1; }); }); return s; }
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
 
@@ -125,7 +127,7 @@ async function api(req, res, url) {
     return send(res, 200, { token: s, risk: risk.score(s, null) });
   }
 
-  if (p === '/api/bars' && m === 'GET') return send(res, 200, { bars: await market.candles(String(q.get('pair') || ''), String(q.get('res') || '15m')) });
+  if (p === '/api/bars' && m === 'GET') return send(res, 200, { bars: await market.candles(String(q.get('pair') || ''), String(q.get('res') || '15m'), Number(q.get('limit')) || 300) });
 
   if (p === '/api/leaderboard' && m === 'GET') {
     const who = String(req.headers['x-player'] || '');
@@ -195,8 +197,9 @@ const server = http.createServer(function (req, res) {
 exports.server = server;
 if (require.main === module) {
   store.load();
-  market.startWatcher();
+  market.setPinned(heldMints);
+  market.start();
   server.listen(PORT, HOST, function () { console.log('Dojo at http://' + HOST + ':' + PORT + '  (' + store.count() + ' players, start cash $' + sim.START_CASH + ', fee ' + sim.FEE_PCT + '%)'); });
-  const bye = function () { store.flush(); process.exit(0); };
+  const bye = function () { store.flush(); market.flush(); process.exit(0); };
   process.on('SIGINT', bye); process.on('SIGTERM', bye);
 }

@@ -4,5 +4,8 @@
   "description": "Practice memecoin trading with fake money on real Solana prices and liquidity",
   "main": "src/server.js",
   "private": true,
-  "scripts": { "start": "node src/server.js", "test": "node test/run.js" }
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node test/run.js && node test/world_tests.js"
+  }
 }

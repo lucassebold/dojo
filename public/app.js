@@ -100,24 +100,128 @@ window.addEventListener('hashchange', route);
   $('#searchForm').addEventListener('submit', function (e) { e.preventDefault(); const q = input.value.trim(); if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(q)) { location.hash = '#/token/' + q; input.value = ''; box.hidden = true; } });
 })();
 
-// ---------- home ----------
-function tokenRow(s) {
-  return '<a class="tok" href="#/token/' + esc(s.mint) + '">' + icon(s.icon) +
-    '<div class="n"><b>' + esc(s.symbol) + '</b><span>' + esc(s.name) + '</span></div>' +
-    '<div class="r"><b>' + price(s.price) + '</b><br><span class="' + cls(s.change.h24) + '">' + pct(s.change.h24) + '</span> <span class="muted">24h</span></div>' +
-    '<div class="r muted" style="min-width:90px">' + compact(s.liquidity) + '<br>liquidity</div></a>';
+// ---------- home: trending list ----------
+// The market is simulated and moves every second, so the list refreshes every 3 s. Rows are tinted by the move in the chosen
+// period, HOT marks tokens whose volume is accelerating, and a number that moved pops, flashes and rolls to its new value.
+const TF = [['m5', '5m'], ['h1', '1h'], ['h6', '6h'], ['h24', '24h']];
+const TREND_REFRESH_MS = 3000, TREND_SHOWN = 40, TREND_RESORT_MS = 20000;
+let trendTf = 'h1', trendList = [], trendPrev = {}, trendAt = 0, trendOrder = [], trendSortedAt = 0, pressing = false;
+document.addEventListener('pointerdown', function () { pressing = true; }, true);
+document.addEventListener('pointerup', function () { pressing = false; }, true);
+document.addEventListener('pointercancel', function () { pressing = false; }, true);
+function isHot(t) { return (t.volume.h1 >= 5000 && t.volume.m5 * 12 >= t.volume.h1 * 3) || t.change.m5 >= 15; }
+function isNew(t) { return t.createdAt && Date.now() - t.createdAt < 6 * 3600000; }
+function arrowPct(v) { return (v >= 0 ? '↑ ' : '↓ ') + Math.abs(v).toLocaleString('en-US', { maximumFractionDigits: 1 }) + '%'; }
+function setTrend(list) { trendPrev = {}; trendList.forEach(function (t) { trendPrev[t.mint] = t; }); trendList = list; trendAt = Date.now(); }
+
+// Price shape over the last 24 h from the 5m / 1h / 6h / 24h changes (older points sit closer together).
+function sparkline(t, up) {
+  const p = Number(t.price), at = function (c) { const f = 1 + (Number(c) || 0) / 100; return f > 0.01 ? p / f : null; };
+  const pts = [[0, at(t.change.h24)], [0.35, at(t.change.h6)], [0.7, at(t.change.h1)], [0.93, at(t.change.m5)], [1, p]].filter(function (x) { return x[1] != null && x[1] > 0; });
+  if (pts.length < 2) return '';
+  const lo = Math.min.apply(null, pts.map(function (x) { return x[1]; })), hi = Math.max.apply(null, pts.map(function (x) { return x[1]; })), W = 84, H = 30;
+  const xy = pts.map(function (x) { return [3 + x[0] * (W - 9), hi === lo ? H / 2 : 4 + (1 - (x[1] - lo) / (hi - lo)) * (H - 8)]; });
+  const col = up ? '#22c55e' : '#ef4444', end = xy[xy.length - 1];
+  return '<svg class="spark" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" aria-hidden="true"><polyline fill="none" stroke="' + col + '" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" opacity=".85" points="' +
+    xy.map(function (q) { return q[0].toFixed(1) + ',' + q[1].toFixed(1); }).join(' ') + '"/><circle class="ring" cx="' + end[0].toFixed(1) + '" cy="' + end[1].toFixed(1) + '" r="2.6" fill="' + col + '"/><circle cx="' + end[0].toFixed(1) + '" cy="' + end[1].toFixed(1) + '" r="2.6" fill="' + col + '"/></svg>';
 }
-function homePage() {
-  view.innerHTML = '<div class="wrap"><div class="hero"><h1>Trade memecoins.<br><em>Risk nothing.</em></h1>' +
-    '<p>Practice with <b>$10,000</b> of fake money on real Solana prices and real liquidity. No wallet. No sign-up. Your trades hit the same price impact they would in real life.</p>' +
-    '<div class="trust"><span>Real-time prices</span><span>Real liquidity and slippage</span><span>No wallet needed</span><span>Compete on the leaderboard</span></div></div>' +
-    '<div class="sec-title">Trending on Solana</div><div id="trend" class="list"><div class="empty">Loading markets...</div></div></div>';
-  const load = function () {
-    api('/api/trending').then(function (j) {
-      $('#trend').innerHTML = j.tokens.length ? j.tokens.map(tokenRow).join('') : '<div class="empty">No markets to show right now.</div>';
-    }).catch(function (e) { if (!$('#trend .tok')) $('#trend').innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; });
+
+function tokRow(t, on, bumps, idx) {
+  const chg = Number(t.change[trendTf]) || 0, up = chg >= 0, prev = bumps ? trendPrev[t.mint] : null;
+  const pc = prev ? Number(prev.change[trendTf]) || 0 : chg;
+  // only what the user can actually see changing gets the pop: compare the rendered text, not the raw number
+  const mcMoved = prev && compact(prev.marketCap) !== compact(t.marketCap), chMoved = prev && arrowPct(pc) !== arrowPct(chg);
+  // Each row breathes all the time: bigger moves and HOT rows breathe faster. The phase comes from the clock, so a
+  // re-render does not restart it, and rows are staggered so the list ripples instead of blinking together.
+  const k = Math.min(1, Math.abs(chg) / 60), bt = isHot(t) ? 1.5 : 2.8 - k, delay = -(((Date.now() / 1000) + (idx || 0) * 0.17) % bt);
+  return '<a class="tok ' + (up ? 't-up' : 't-down') + (on ? ' on' : '') + '" style="--i:' + k.toFixed(2) + ';--bt:' + bt.toFixed(2) + 's;--d:' + delay.toFixed(2) + 's" href="#/token/' + esc(t.mint) + '">' +
+    icon(t.icon) +
+    '<div class="n"><div class="nm"><b>' + esc(t.symbol) + '</b>' + (isHot(t) ? '<span class="tag hot">&#128293; HOT</span>' : '') + (isNew(t) ? '<span class="tag new">NEW</span>' : '') + '</div>' +
+    '<div class="sub">' + price(t.price) + '<span class="extra"> &middot; ' + (t.createdAt ? esc(ago(t.createdAt).replace(' ago', '')) + ' &middot; ' : '') + 'vol ' + compact(t.volume[trendTf]) + '</span></div></div>' + sparkline(t, up) +
+    '<div class="r"><div class="mc' + (mcMoved ? (t.marketCap > prev.marketCap ? ' bump-up' : ' bump-down') + '" data-from="' + esc(prev.marketCap) + '" data-to="' + esc(t.marketCap) + '" data-k="usd' : '') + '">' + compact(t.marketCap) + '</div>' +
+    '<div class="ch ' + (up ? 'up' : 'down') + (chMoved ? (chg > pc ? ' bump-up' : ' bump-down') + '" data-from="' + esc(pc) + '" data-to="' + esc(chg) + '" data-k="pct' : '') + '">' + arrowPct(chg) + '</div></div></a>';
+}
+// The order is kept for 20 s so rows do not jump around while the numbers move; it is re-sorted by volume in the chosen period.
+function orderedTrend(resort) {
+  const by = {}; trendList.forEach(function (t) { by[t.mint] = t; });
+  if (resort || !trendOrder.length || Date.now() - trendSortedAt > TREND_RESORT_MS) {
+    trendOrder = trendList.slice().sort(function (a, b) { return b.volume[trendTf] - a.volume[trendTf]; }).slice(0, TREND_SHOWN).map(function (t) { return t.mint; });
+    trendSortedAt = Date.now();
+  }
+  return trendOrder.map(function (m) { return by[m]; }).filter(Boolean);
+}
+// Rolls the changed numbers from their old value to the new one (only values that moved carry data-from).
+function animateNums(root) {
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  Array.prototype.forEach.call(root.querySelectorAll('[data-to]'), function (el) {
+    const from = Number(el.getAttribute('data-from')), to = Number(el.getAttribute('data-to')), usdKind = el.getAttribute('data-k') === 'usd', t0 = performance.now();
+    (function step(now) {
+      const k = Math.min(1, (now - t0) / 900), e = 1 - Math.pow(1 - k, 3), v = from + (to - from) * e;
+      el.textContent = usdKind ? compact(v) : arrowPct(v);
+      if (k < 1 && el.isConnected) requestAnimationFrame(step);
+    })(t0);
+  });
+}
+// Ambient life: every 2 s a few visible rows re-"build" a number, digits shuffling and settling left to right on the TRUE value.
+// It is only a visual effect (neutral violet glow, no green/red, no arrow). The first 10 visible rows take turns (4 per tick,
+// each about every 5 s) and 2 random rows from the rest keep the bottom from sitting still.
+function scramble(el) {
+  const final = el.textContent, n = final.length, t0 = performance.now();
+  el.classList.add('scan');
+  (function step(now) {
+    if (!el.isConnected) return;
+    const k = Math.min(1, (now - t0) / 700), fixed = Math.floor(k * n);
+    let out = '';
+    for (let i = 0; i < n; i++) { const c = final.charAt(i); out += i < fixed || !/[0-9]/.test(c) ? c : String(Math.floor(Math.random() * 10)); }
+    el.textContent = out;
+    if (k < 1) requestAnimationFrame(step); else el.classList.remove('scan');
+  })(t0);
+}
+function ambientTick(box) {
+  if (!box || document.hidden || (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)) return;
+  const rows = Array.prototype.filter.call(box.querySelectorAll('.tok'), function (r) { const b = r.getBoundingClientRect(); return b.bottom > 0 && b.top < window.innerHeight; });
+  const run = function (row) {
+    const el = row.querySelector(Math.random() < 0.65 ? '.mc' : '.ch');
+    if (el && !el.hasAttribute('data-to') && !el.classList.contains('scan')) scramble(el);   // never touch a number that is rolling for a real move
   };
-  load(); every(60000, load);
+  const top = rows.slice(0, 10), rest = rows.slice(10);
+  if (!box._turns || box._turns.length < 4) {
+    const order = top.map(function (_, i) { return i; });
+    for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)), x = order[i]; order[i] = order[j]; order[j] = x; }
+    box._turns = (box._turns || []).concat(order);
+  }
+  for (let i = 0; i < 4; i++) { const row = top[box._turns.shift()]; if (row) run(row); }
+  for (let i = 0; i < 2 && rest.length; i++) run(rest.splice(Math.floor(Math.random() * rest.length), 1)[0]);
+}
+function renderTrend(box, bumps, resort) {
+  if (!box) return;
+  const list = orderedTrend(resort);
+  box.innerHTML = list.length ? list.map(function (t, i) { return tokRow(t, false, bumps, i); }).join('') : '<div class="empty">No markets to show right now.</div>';
+  animateNums(box);
+}
+
+function homePage() {
+  view.innerHTML = '<div class="wrap"><div class="hero"><span class="aibadge">Practice market &middot; real tokens, simulated prices</span><h1>Trade memecoins.<br><em>Risk nothing.</em></h1>' +
+    '<p>Practice with <b>$10,000</b> of fake money on real Solana tokens. Prices are simulated from the real market: they move like the real thing, with the same liquidity and price impact, and they never freeze. No wallet. No sign-up.</p>' +
+    '<div class="trust"><span>Prices moving every second</span><span>Real tokens and liquidity</span><span>No wallet needed</span><span>Compete on the leaderboard</span></div></div>' +
+    '<div class="trendhead"><div class="sec-title">Trending on Solana<span class="livedot"></span><span class="trendage" id="trendage">live</span></div>' +
+    '<div class="tftabs" id="tftabs">' + TF.map(function (x) { return '<button data-tf="' + x[0] + '"' + (x[0] === trendTf ? ' class="on"' : '') + '>' + x[1] + '</button>'; }).join('') + '</div></div>' +
+    '<div id="trend" class="list"><div class="empty">Loading markets...</div></div></div>';
+  $('#tftabs').addEventListener('click', function (e) {
+    const b = e.target.closest('button'); if (!b) return;
+    trendTf = b.getAttribute('data-tf');
+    Array.prototype.forEach.call($('#tftabs').children, function (x) { x.classList.toggle('on', x === b); });
+    renderTrend($('#trend'), false, true);
+  });
+  const load = function () {
+    if (pressing) return;      // a re-render between mouse down and up would swallow the click
+    api('/api/trending').then(function (j) { setTrend(j.tokens); renderTrend($('#trend'), true, false); })
+      .catch(function (e) { const box = $('#trend'); if (box && !box.querySelector('.tok')) box.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; });
+  };
+  if (trendList.length) renderTrend($('#trend'), false, false);   // instant paint from the last read
+  every(1000, function () { const a = $('#trendage'); if (a && trendAt) a.textContent = 'updated ' + Math.floor((Date.now() - trendAt) / 1000) + 's ago'; });
+  every(2000, function () { ambientTick($('#trend')); });
+  load(); every(TREND_REFRESH_MS, load);
 }
 
 // ---------- new pairs ----------
@@ -160,18 +264,18 @@ function newPairsPage() {
 function tokenPage(mint) {
   view.innerHTML = '<div class="tokpage"><div class="tokmain"><div id="thead" class="thead"><span class="muted">Loading...</span></div>' +
     '<div class="tfs" id="tfs"></div><div id="chart"></div><div class="tokinfo" id="tinfo"></div></div><aside class="tokside" id="side"></aside></div>';
-  let snap = null, res = '15m', series = null, vol = null, lastBar = null, side = 'buy', amount = null, quoteSeq = 0, quoteT = null, busy = false;
+  let snap = null, res = '15m', series = null, vol = null, lastTime = 0, side = 'buy', amount = null, quoteSeq = 0, quoteT = null, busy = false;
 
   ['1m', '5m', '15m', '1h', '4h', 'D'].forEach(function (r) {
     const b = document.createElement('button'); b.textContent = r === 'D' ? '1D' : r; b.className = r === res ? 'on' : '';
-    b.addEventListener('click', function () { res = r; Array.prototype.forEach.call($('#tfs').children, function (x) { x.classList.remove('on'); }); b.classList.add('on'); lastBar = null; if (series) { series.setData([]); vol.setData([]); } liveCandle(); loadBars(true); });
+    b.addEventListener('click', function () { res = r; Array.prototype.forEach.call($('#tfs').children, function (x) { x.classList.remove('on'); }); b.classList.add('on'); lastTime = 0; if (series) { series.setData([]); vol.setData([]); } loadBars(true); });
     $('#tfs').appendChild(b);
   });
 
   function head() {
     const s = snap;
     $('#thead').innerHTML = '<div class="name">' + icon(s.icon) + '<div><b style="font-size:16px">' + esc(s.symbol) + '</b><br><span class="muted">' + esc(s.name) + '</span></div></div>' +
-      '<div class="stat"><span>Price</span><b>' + price(s.price) + '</b></div>' +
+      '<div class="stat"><span>Price <i class="simtag" title="Simulated price, based on the real market">sim</i></span><b>' + price(s.price) + '</b></div>' +
       '<div class="stat"><span>5m</span><b class="' + cls(s.change.m5) + '">' + pct(s.change.m5) + '</b></div>' +
       '<div class="stat"><span>1h</span><b class="' + cls(s.change.h1) + '">' + pct(s.change.h1) + '</b></div>' +
       '<div class="stat"><span>24h</span><b class="' + cls(s.change.h24) + '">' + pct(s.change.h24) + '</b></div>' +
@@ -188,56 +292,44 @@ function tokenPage(mint) {
   }
   function loadSnap() {
     return api('/api/token/' + mint).then(function (j) {
-      snap = j.token; head(); info(j.risk); if (!$('#amt')) renderSide(false); liveCandle();
-      if (series && snap.price) series.applyOptions({ priceFormat: fmt(snap.price) });
+      snap = j.token; head(); info(j.risk); if (!$('#amt')) renderSide(false);
     });
   }
-  // The chart exists from the first second and follows the live price (it arrives every 3 s, no extra
-  // API call). The history from GeckoTerminal is slow and rate limited, so it is poured in when it comes.
-  const SECS = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, 'D': 86400 };
+  // The prices come from the simulated market on our own server, so the chart is never waiting on a rate-limited API:
+  // the full history is loaded once, then the last candles are refreshed every 2 s straight from the simulation.
   function ensureChart() {
     if (chart || !snap) return;
     const el = $('#chart');
-    chart = LightweightCharts.createChart(el, { height: 440, width: el.clientWidth, layout: { background: { color: '#0a0c10' }, textColor: '#8f98a8' }, grid: { vertLines: { color: '#10141b' }, horzLines: { color: '#10141b' } }, crosshair: { mode: 0 }, timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#232833' }, rightPriceScale: { borderColor: '#232833', scaleMargins: { top: 0.08, bottom: 0.28 } } });
+    chart = LightweightCharts.createChart(el, { height: 440, width: el.clientWidth, layout: { background: { color: '#09060f' }, textColor: '#9a8fb3' }, grid: { vertLines: { color: '#1a1228' }, horzLines: { color: '#1a1228' } }, crosshair: { mode: 0 }, timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#261b3a' }, rightPriceScale: { borderColor: '#261b3a', scaleMargins: { top: 0.08, bottom: 0.28 } } });
     series = chart.addCandlestickSeries({ upColor: '#22c55e', downColor: '#ef4444', borderVisible: false, wickUpColor: '#22c55e', wickDownColor: '#ef4444', priceFormat: fmt(snap.price || 0.0001) });
     vol = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: '', lastValueVisible: false, priceLineVisible: false });
     vol.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
     onResize = function () { if (chart) chart.applyOptions({ width: el.clientWidth }); };
     window.addEventListener('resize', onResize);
   }
-  function liveCandle() {
-    if (!snap || !(snap.price > 0)) return;
-    ensureChart();
-    if (!series) return;
-    const step = SECS[res] || 900, now = Math.floor(Date.now() / 1000), p = snap.price;
-    if (!lastBar) { lastBar = { time: Math.floor(now / step) * step, open: p, high: p, low: p, close: p }; }
-    else if (now >= lastBar.time + step) { lastBar = { time: lastBar.time + Math.floor((now - lastBar.time) / step) * step, open: lastBar.close, high: p, low: p, close: p }; }
-    else { lastBar = { time: lastBar.time, open: lastBar.open, high: Math.max(lastBar.high, p), low: Math.min(lastBar.low, p), close: p }; }
-    series.update(lastBar);
-  }
   function fmt(p) { const d = p >= 1 ? 4 : Math.min(10, Math.ceil(-Math.log10(p)) + 4); return { type: 'price', precision: d, minMove: Math.pow(10, -d) }; }
-  function loadBars(first, tries) {
-    tries = tries || 0; const askedRes = res;
+  function volPoint(b) { return { time: b.time, value: b.volume || 0, color: b.close >= b.open ? '#22c55e55' : '#ef444455' }; }
+  function loadBars(first) {
+    const askedRes = res;
     if (!snap) return;
-    const el = $('#chart');
-    if (first) { const old = el.querySelector('.chartmsg'); if (old) old.remove(); }
     api('/api/bars?pair=' + encodeURIComponent(snap.pair) + '&res=' + res).then(function (j) {
       if (res !== askedRes) return;      // the user already switched period
       ensureChart();
-      const m = el.querySelector('.chartmsg'); if (m) m.remove();
-      if (j.bars.length) {
-        series.setData(j.bars);
-        vol.setData(j.bars.map(function (b) { return { time: b.time, value: b.volume || 0, color: b.close >= b.open ? '#22c55e55' : '#ef444455' }; }));
-        lastBar = j.bars[j.bars.length - 1];
-      }
-      liveCandle(); if (first) chart.timeScale().fitContent();
+      const m = $('#chart').querySelector('.chartmsg'); if (m) m.remove();
+      series.setData(j.bars); vol.setData(j.bars.map(volPoint));
+      lastTime = j.bars.length ? j.bars[j.bars.length - 1].time : 0;
+      if (first) chart.timeScale().fitContent();
     }).catch(function (e) {
-      if (res !== askedRes) return;
-      const busy = /busy/i.test(e.message);
-      // The live candle keeps running meanwhile; this note only says the older candles are still coming.
-      if (!el.querySelector('.chartmsg')) el.insertAdjacentHTML('beforeend', '<div class="chartmsg note">' + (busy ? 'Loading older candles... live price is already running.' : esc(e.message)) + '</div>');
-      if (busy && tries < 8) setTimeout(function () { if (el.isConnected && res === askedRes) loadBars(first, tries + 1); }, 7000);
+      if (res === askedRes && !$('#chart').querySelector('.chartmsg')) $('#chart').insertAdjacentHTML('beforeend', '<div class="chartmsg note">' + esc(e.message) + '</div>');
     });
+  }
+  function pollBars() {
+    if (!series || !lastTime) return;
+    const askedRes = res;
+    api('/api/bars?pair=' + encodeURIComponent(snap.pair) + '&res=' + res + '&limit=2').then(function (j) {
+      if (res !== askedRes || !series) return;
+      j.bars.forEach(function (b) { if (b.time >= lastTime) { series.update(b); vol.update(volPoint(b)); lastTime = b.time; } });
+    }).catch(function () { /* the next poll tries again */ });
   }
 
   // ---- trade panel ----
@@ -252,7 +344,7 @@ function tokenPage(mint) {
       '<label class="field"><span>' + (side === 'buy' ? 'Amount to spend (USD)' : 'Percent of your position to sell') + '</span><input id="amt" inputmode="decimal" autocomplete="off" placeholder="' + (side === 'buy' ? '100' : '100') + '" value="' + esc(prev) + '"></label>' +
       '<div class="preview" id="prev"><span class="muted">Enter an amount to see the fill.</span></div>' +
       '<button class="btn tradebtn ' + (side === 'buy' ? 'buy' : 'sell') + '" id="go" disabled>' + (side === 'buy' ? 'Buy ' : 'Sell ') + esc(snap.symbol) + '</button>' +
-      '<p class="note">Fills use the live price, the pool\'s liquidity (price impact) and a ' + esc(FEE) + '% fee, like a real order.</p>' +
+      '<p class="note">Fills use the simulated price, the pool\'s liquidity (price impact) and a ' + esc(FEE) + '% fee, like a real order.</p>' +
       '<div class="card" style="margin-top:14px">' + (pos ? '<div class="row"><b>Your position</b><span class="' + cls(pos.pnl) + '">' + money(pos.pnl) + ' (' + pct(pos.pnlPct) + ')</span></div>' +
         '<div class="kv"><span>Holding</span><b>' + qty(pos.qty) + ' ' + esc(pos.symbol) + '</b></div><div class="kv"><span>Avg entry</span><b>' + price(pos.avgPrice) + '</b></div><div class="kv"><span>Cost</span><b>' + money(pos.cost) + '</b></div><div class="kv"><span>Exit value</span><b>' + money(pos.value) + '</b></div>'
         : '<span class="muted">You do not hold ' + esc(snap.symbol) + ' yet.</span>') + '</div>';
@@ -297,8 +389,9 @@ function tokenPage(mint) {
   Promise.all([refreshMe(), loadSnap()]).then(function () { renderSide(false); loadBars(true); }).catch(function (e) {
     $('#thead').innerHTML = '<span class="down">' + esc(e.message) + '</span>';
   });
-  every(3000, function () { loadSnap().catch(function () {}); });
-  every(45000, function () { loadBars(false); });
+  every(2000, function () { loadSnap().catch(function () {}); });
+  every(2000, pollBars);
+  every(30000, function () { loadBars(false); });
 }
 
 // ---------- portfolio ----------

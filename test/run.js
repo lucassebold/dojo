@@ -1,11 +1,8 @@
 'use strict';
-// Plain-node tests: node test/run.js  (no network: DexScreener/GeckoTerminal are stubbed)
+// Plain-node tests: node test/run.js  (no network: DexScreener is stubbed). Simulator maths: node test/world_tests.js
 const assert = require('assert');
 const http = require('http');
 const net = require('net');
-process.env.GECKO_SPACING_MS = '5';
-process.env.GECKO_COOLDOWN_MS = '80';
-process.env.WATCH_EVERY_MS = '40';
 process.env.DATA_DIR = require('path').join(require('os').tmpdir(), 'dojo-test-' + Date.now());
 const sim = require('../src/sim');
 const upstream = require('../src/http');
@@ -92,104 +89,106 @@ test('position limit and reset', function () {
   assert.strictEqual(a.resets, 1);
 });
 
-// ---- market cache + HTTP API with a stubbed upstream ----
-const createdAt = {}, thin = {};   // per-mint overrides used by the new-pairs test
+// ---- simulated market with a stubbed DexScreener (only used for names, sizes and the slow real-price anchor) ----
+const createdAt = {}, thin = {};   // per-mint overrides
 function pairFor(mint, price, liq) {
-  return { chainId: 'solana', pairAddress: 'P' + mint.slice(0, 40), dexId: 'raydium', baseToken: { address: mint, symbol: mint.slice(0, 4), name: 'n' }, priceUsd: String(price), liquidity: { usd: thin[mint] ? 100 : liq }, txns: {}, volume: {}, priceChange: {}, pairCreatedAt: createdAt[mint] || 0 };
+  return {
+    chainId: 'solana', pairAddress: 'P' + mint.slice(0, 40), dexId: 'raydium', baseToken: { address: mint, symbol: mint.slice(0, 4), name: 'n' }, priceUsd: String(price),
+    liquidity: { usd: thin[mint] ? 100 : liq }, txns: { h24: { buys: 500, sells: 450 } }, volume: { m5: 900, h1: 9000, h6: 40000, h24: 120000 },
+    priceChange: { m5: 1, h1: 4, h6: -3, h24: 10 }, marketCap: price * 1e9, pairCreatedAt: createdAt[mint] || 0
+  };
 }
-let dexCalls = 0, geckoCalls = 0, dexDown = false, geckoLimited = false, price = 0.01, newPools = [], profiles = [];
+let dexCalls = 0, dexDown = false, price = 0.01, boosts = [], profiles = [];
 upstream.getJson = async function (url) {
-  if (/dexscreener/.test(url)) {
-    dexCalls++;
-    if (dexDown) throw new Error('HTTP 429 em api.dexscreener.com');
-    if (/token-boosts/.test(url)) return [{ chainId: 'solana', tokenAddress: M2 }];
-    if (/token-profiles/.test(url)) return profiles.map(function (m) { return { chainId: 'solana', tokenAddress: m }; });
-    if (/tokens\/v1/.test(url)) return url.split('/').pop().split(',').map(function (m) { return pairFor(m, price, 200000); });
-    return { pairs: [pairFor(M2, price, 200000)] };
-  }
-  geckoCalls++;
-  if (geckoLimited) throw new Error('HTTP 429 em api.geckoterminal.com');
-  if (/new_pools/.test(url)) return { data: newPools.map(function (m) { return { relationships: { base_token: { data: { id: 'solana_' + m } } } }; }) };
-  return { data: { attributes: { ohlcv_list: [[2, 1, 2, 0.5, 1.5, 10], [1, 1, 2, 0.5, 1.5, 10]] } } };
+  dexCalls++;
+  if (dexDown) throw new Error('HTTP 429 em api.dexscreener.com');
+  if (/token-boosts\/top/.test(url)) return boosts.map(function (m) { return { chainId: 'solana', tokenAddress: m }; });
+  if (/token-boosts\/latest/.test(url)) return [];
+  if (/token-profiles/.test(url)) return profiles.map(function (m) { return { chainId: 'solana', tokenAddress: m }; });
+  if (/tokens\/v1/.test(url)) return url.split('/').pop().split(',').map(function (m) { return pairFor(m, price, 200000); });
+  return { pairs: [pairFor(M2, price, 200000)] };
 };
 const market = require('../src/market');
+let clock = Date.now();
+const tick = function (seconds) { clock += seconds * 1000; market._tick(clock); };
 
-test('market: many readers of the same token cost one upstream call', async function () {
+test('market: an unknown real token is fetched once, then served from the simulation', async function () {
   dexCalls = 0;
-  await Promise.all([1, 2, 3, 4, 5].map(function () { return market.prices([M], 10000); }));
-  const first = dexCalls;
-  for (let i = 0; i < 20; i++) await market.prices([M], 10000);
-  assert.ok(first >= 1 && first <= 5);
-  assert.strictEqual(dexCalls, first, 'later reads must come from the cache');
+  const r = await market.prices([M]);
+  assert.ok(r[M] && r[M].price > 0 && r[M].sim === true);
+  near(r[M].price, 0.01, 0.0005);                       // starts at the real price
+  assert.strictEqual(dexCalls, 1);
+  for (let i = 0; i < 20; i++) await market.prices([M]);
+  assert.strictEqual(dexCalls, 1, 'known tokens never touch the network');
 });
 
-test('market: serves the last good price when the upstream fails', async function () {
-  await market.prices([M2], 0);
+test('market: prices keep moving on their own and cost no upstream call', async function () {
+  await market.prices([M]);
+  dexCalls = 0;
+  const seen = {};
+  for (let i = 0; i < 30; i++) { tick(1); seen[(await market.prices([M]))[M].price] = 1; }
+  assert.ok(Object.keys(seen).length >= 25, 'the price should change almost every second, got ' + Object.keys(seen).length + ' distinct values');
+  assert.strictEqual(dexCalls, 0);
+});
+
+test('market: the real price is a slow anchor: the simulation follows it', async function () {
+  await market.prices([M]);
+  price = 0.02;                                         // the real market doubles
+  await market._refresh();
+  tick(2 * 3600);                                       // two simulated hours
+  const p = (await market.prices([M]))[M].price;
+  assert.ok(p > 0.012 && p < 0.035, 'should have followed the real price up, got ' + p);
+  price = 0.01; await market._refresh(); tick(2 * 3600);
+  const q = (await market.prices([M]))[M].price;
+  assert.ok(q < p, 'and back down');
+});
+
+test('market: DexScreener down does not stop the market', async function () {
+  await market.prices([M]);
   dexDown = true;
-  const r = await market.prices([M2], 0);
-  assert.ok(r[M2] && r[M2].price > 0);
+  await market._refresh();                              // fails quietly
+  tick(60);
+  const r = await market.prices([M]);
+  assert.ok(r[M].price > 0);
+  await assert.rejects(function () { return market.prices([M2.slice(0, -1) + 'x']); }, /429/, 'only a token never seen before needs the network');
   dexDown = false;
 });
 
-test('market: candles are cached, sorted and queued', async function () {
-  geckoCalls = 0;
-  const pair = 'P' + M.slice(0, 40);
-  const a = await market.candles(pair, '15m'), b = await market.candles(pair, '15m');
-  assert.strictEqual(geckoCalls, 1);
-  assert.deepStrictEqual(a.map(function (c) { return c.time; }), [1, 2]);
-  assert.strictEqual(b.length, 2);
-  await assert.rejects(function () { return market.candles('bad address!', '15m'); });
-});
-
-test('market: new pairs are newest first, drop old and thin pools, and are cached', async function () {
+test('market: discovery stocks the market; trending by 1h volume; new pairs newest first, thin and old dropped', async function () {
   const mk = function (c) { return 'N' + c + M.slice(2, 40); };
   const A = mk('1'), B = mk('2'), C = mk('3'), D = mk('4');
   const now = Date.now();
   createdAt[A] = now - 5 * 60000; createdAt[B] = now - 3 * 86400000; createdAt[C] = now - 60 * 60000; createdAt[D] = now - 60000; thin[D] = true;
-  newPools = [A, B, D]; profiles = [C, 'not-a-mint'];
-  const list = await market.newPairs();
-  assert.deepStrictEqual(list.map(function (s) { return s.mint; }), [A, C], 'newest first; 3-day-old and thin pools dropped');
-  const before = dexCalls + geckoCalls;
-  await market.newPairs(); await market.newPairs();
-  assert.strictEqual(dexCalls + geckoCalls, before, 'repeat reads come from the cache');
+  boosts = [A, B, D]; profiles = [C, 'not-a-mint'];
+  await market._discover();
+  const ids = (await market.newPairs()).map(function (s) { return s.mint; });
+  assert.deepStrictEqual(ids.filter(function (m) { return [A, B, C, D].indexOf(m) >= 0; }), [A, C], 'newest first; 3-day-old and thin pools dropped');
+  const t = await market.trending();
+  assert.ok(t.length >= 3);
+  for (let i = 1; i < t.length; i++) assert.ok(t[i - 1].volume.h1 >= t[i].volume.h1, 'sorted by 1h volume');
+  assert.ok(!t.some(function (s) { return s.mint === D; }), 'thin pools are not trending');
+  const before = dexCalls; await market._discover();
+  assert.ok(dexCalls > before, 'discovery looks again');
 });
 
-test('market: the background watcher keeps looked-at tokens fresh', async function () {
-  const W = 'W2' + M.slice(2, 40);
-  price = 0.01;
-  await market.prices([W], 0);
-  const timer = market.startWatcher();
-  price = 0.05;
-  await new Promise(function (r) { setTimeout(r, 250); });
-  clearInterval(timer);
-  const got = await market.prices([W], 60000);   // would be the old 0.01 without the watcher
-  assert.strictEqual(got[W].price, 0.05);
-  price = 0.01;
+test('market: candles come from the simulation, per period, with the last one still forming', async function () {
+  const s = (await market.prices([M]))[M];
+  const m1 = await market.candles(s.pair, '1m', 300), h1 = await market.candles(s.pair, '1h', 300);
+  assert.ok(m1.length >= 100 && h1.length >= 10);
+  for (let i = 1; i < m1.length; i++) assert.strictEqual(m1[i].time - m1[i - 1].time, 60, 'one candle per minute, no gaps');
+  const last = (await market.candles(s.pair, '1m', 2));
+  assert.strictEqual(last.length, 2);
+  tick(2);
+  const again = await market.candles(s.pair, '1m', 2);
+  assert.ok(again[1].close !== last[1].close || again[1].time !== last[1].time, 'the last candle moves');
+  await assert.rejects(function () { return market.candles('Z'.repeat(40), '1m'); }, /Unknown pair/);
+  await assert.rejects(function () { return market.candles('bad', '1m'); }, /Invalid pair/);
 });
 
-test('market: a 429 from GeckoTerminal pauses upstream calls and answers "busy" fast, then recovers', async function () {
-  const P1 = 'Q' + M.slice(1, 40), P2 = 'R' + M.slice(1, 40);
-  geckoLimited = true; geckoCalls = 0;
-  await assert.rejects(function () { return market.candles(P1, '5m'); }, /busy/i);
-  assert.strictEqual(geckoCalls, 1);
-  const t0 = Date.now();
-  await assert.rejects(function () { return market.candles(P2, '5m'); }, /busy/i);   // during the pause: no upstream call
-  assert.strictEqual(geckoCalls, 1);
-  assert.ok(Date.now() - t0 < 50);
-  geckoLimited = false;
-  await new Promise(function (r) { setTimeout(r, 120); });
-  const ok = await market.candles(P2, '5m');
-  assert.ok(ok.length > 0);
-});
-
-test('market: too many chart requests waiting are refused instead of queued forever', async function () {
-  const mk = function (i) { return 'ABCDEFGHJ'.charAt(i) + 'Z' + M.slice(2, 40); };
-  const calls = [];
-  for (let i = 0; i < 9; i++) calls.push(market.candles(mk(i), '1h').then(function () { return 'ok'; }, function (e) { return /busy/i.test(e.message) ? 'busy' : 'err:' + e.message; }));
-  const out = await Promise.all(calls);
-  assert.ok(out.filter(function (x) { return x === 'busy'; }).length >= 1, out.join(','));
-  assert.ok(out.filter(function (x) { return x === 'ok'; }).length >= 1, out.join(','));
-  assert.ok(!out.some(function (x) { return /^err/.test(x); }), out.join(','));
+test('market: search adds the real tokens it finds to the market', async function () {
+  const found = await market.search('anything');
+  assert.ok(found.length >= 1 && found[0].sim === true && found[0].price > 0);
+  assert.ok((await market.prices([found[0].mint]))[found[0].mint]);
 });
 
 function freePort() { return new Promise(function (r) { const s = net.createServer(); s.listen(0, '127.0.0.1', function () { const p = s.address().port; s.close(function () { r(p); }); }); }); }
