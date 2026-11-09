@@ -104,7 +104,7 @@ button, input { font: inherit; color: inherit; }
 .tfs { display: flex; gap: 4px; padding: 8px 16px; }
 .tfs button { background: transparent; border: 0; padding: 4px 9px; border-radius: 6px; color: var(--muted); cursor: pointer; }
 .tfs button.on { background: var(--blue-dim); color: #fff; }
-#chart { height: 440px; margin: 0 8px; position: relative; }
+#chart { height: 520px; position: relative; }
 .chartmsg { position: absolute; top: 8px; left: 12px; z-index: 5; pointer-events: none; font-size: 12px; color: var(--muted); background: #09060fcc; padding: 3px 8px; border-radius: 6px; }
 
 .qb { display: flex; align-items: center; gap: 6px; color: var(--muted); }
@@ -162,3 +162,35 @@ td.r, th.r { text-align: right; }
   .balance .muted { display: none; } .search { min-width: 120px; }
   .np-main .r:nth-of-type(n+4) { display: none; } .np-main .r { min-width: 90px; }
 }
+
+/* token page: pro-terminal chart */
+.bigmc { font-size: 24px; font-weight: 800; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.charttools { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding: 6px 16px; border-bottom: 1px solid var(--line); }
+.charttools .tfs { padding: 0; }
+.toolr { display: flex; align-items: center; gap: 12px; }
+.tbtn { background: transparent; border: 0; color: var(--muted); padding: 4px 9px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; }
+.tbtn:hover { color: var(--text); } .tbtn.on { color: #fff; background: var(--blue-dim); }
+.modes { display: flex; align-items: center; gap: 2px; color: var(--muted); }
+.modes button { background: transparent; border: 0; color: var(--muted); cursor: pointer; font-weight: 600; padding: 4px 6px; }
+.modes button.on { color: var(--accent); }
+.chartwrap { position: relative; }
+.legend { position: absolute; top: 8px; left: 12px; z-index: 5; pointer-events: none; font-size: 12px; line-height: 1.6; max-width: calc(100% - 90px); }
+.legend .lg { margin-left: 8px; } .legend .lg i { font-style: normal; margin-left: 2px; font-variant-numeric: tabular-nums; }
+.legend .lgv { color: var(--muted); } .legend .lgv i { font-style: normal; }
+.chartbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 12px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.ranges button { background: transparent; border: 0; color: var(--muted); padding: 4px 9px; cursor: pointer; font-size: 12px; font-weight: 600; border-radius: 6px; }
+.ranges button:hover { color: var(--text); background: var(--panel2); }
+.barr { display: flex; align-items: center; gap: 4px; font-size: 12px; }
+.btabs { display: flex; gap: 4px; padding: 0 12px; border-bottom: 1px solid var(--line); }
+.btabs button { background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--muted); padding: 10px 12px; cursor: pointer; font-weight: 600; }
+.btabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+/* order panel: flow of the last 5 minutes, and the Bought / Sold / Holding / PnL block */
+.flow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; padding: 0 0 10px; margin-bottom: 12px; border-bottom: 1px solid var(--line); position: relative; }
+.fcell span { display: block; font-size: 11px; color: var(--muted); } .fcell b { font-size: 12px; font-variant-numeric: tabular-nums; }
+.fbar { position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: #f0504e; } .fbar i { display: block; height: 100%; background: #26d0a0; }
+.pnlblock { display: grid; grid-template-columns: 1fr 1fr 1fr 1.4fr; gap: 6px; margin: 14px 0 6px; padding: 10px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.pcell { text-align: center; } .pcell span { display: block; font-size: 11px; color: var(--muted); margin-bottom: 2px; } .pcell b { font-size: 13px; font-variant-numeric: tabular-nums; } .pcell small { font-weight: 500; }
+.seg button.on.buy { background: #26d0a0; color: #04140a; }
+.btn.buy { background: #26d0a0; border-color: #26d0a0; }
+.thead .name { min-width: 150px; }
+@media (max-width: 960px) { .legend { max-width: calc(100% - 20px); font-size: 11px; } #chart { height: 420px; } }

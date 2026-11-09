@@ -24,6 +24,15 @@ Como o preço se move (em log, passos de 1 s):
 As ordens dos jogadores **não** mexem no preço do mercado (ele é o mesmo para todos); elas pagam o impacto de preço do poço
 só na execução. Não são cotações reais e não servem como dado financeiro.
 
+## Gráfico (estilo terminal profissional)
+Página do token com: velas de **1s, 15s, 30s**, 1m a 1D (os segundos vêm de 1 h de ticks por segundo guardados por token);
+alternância **MarketCap / Price** no eixo (padrão MarketCap); legenda de duas linhas (O H L C, variação e volume) que
+segue o cursor; **setas B/S** nas velas onde você comprou e vendeu; **linha tracejada no preço médio de entrada**, verde ou
+vermelha conforme seu PnL; linha pontilhada no preço atual; zoom rápido (5m a 24h), relógio local, escalas `%` e `log`,
+`Hide All`. No painel: faixa **5m Vol / Buys / Sells / Net Vol**, bloco **Bought / Sold / Holding / PnL** (PnL = posição + vendido
+− comprado, naquele token) e abas Trades / Positions / Info. Preços minúsculos aparecem como `$0.0₅16` (o número pequeno conta
+os zeros). As velas são atualizadas a cada 2 s direto da simulação.
+
 ## Como funciona o resto
 - **Jogador**: um id aleatório guardado no navegador (`localStorage`). Dinheiro fictício, então não há login.
 - **Execução simulada** (`src/sim.js`): pool de produto constante, R = liquidez/2. Comprar x dólares paga preço médio

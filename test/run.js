@@ -181,6 +181,9 @@ test('market: candles come from the simulation, per period, with the last one st
   tick(2);
   const again = await market.candles(s.pair, '1m', 2);
   assert.ok(again[1].close !== last[1].close || again[1].time !== last[1].time, 'the last candle moves');
+  const s1 = await market.candles(s.pair, '1s', 300), s15 = await market.candles(s.pair, '15s', 300);
+  assert.ok(s1.length >= 100 && s15.length >= 20, 'second-level candles exist from the start: ' + s1.length + ' / ' + s15.length);
+  assert.ok(s.flow5m && s.flow5m.vol > 0 && s.ath >= s.marketCap * 0.999, 'snapshot carries the 5m flow and the ATH');
   await assert.rejects(function () { return market.candles('Z'.repeat(40), '1m'); }, /Unknown pair/);
   await assert.rejects(function () { return market.candles('bad', '1m'); }, /Invalid pair/);
 });
@@ -220,6 +223,7 @@ test('api: full flow - account, quote, buy, sell, isolation, leaderboard, valida
     assert.strictEqual(bad.status, 400);
     assert.strictEqual((await call(port, 'POST', '/api/trade', { mint: M, side: 'buy', usd: -5 }, A)).status, 400);
     assert.strictEqual((await call(port, 'POST', '/api/trade', { mint: M, side: 'buy', usd: 1e9 }, A)).status, 400);
+    const tokPair = (await call(port, 'GET', '/api/token/' + M)).body.token.pair;
     const quote = await call(port, 'POST', '/api/quote', { mint: M, side: 'buy', usd: 100 }, A);
     assert.strictEqual(quote.status, 200);
     assert.strictEqual((await call(port, 'GET', '/api/me', null, A)).body.me.cash, sim.START_CASH, 'a quote must not spend money');
@@ -237,6 +241,11 @@ test('api: full flow - account, quote, buy, sell, isolation, leaderboard, valida
     assert.strictEqual(sell.status, 200);
     assert.strictEqual(sell.body.me.positions.length, 0);
     assert.strictEqual((await call(port, 'GET', '/api/me/trades', null, A)).body.trades.length, 2);
+    assert.strictEqual((await call(port, 'GET', '/api/me/trades?mint=' + M, null, A)).body.trades.length, 2, 'trades can be filtered by token');
+    assert.strictEqual((await call(port, 'GET', '/api/me/trades?mint=' + M2, null, A)).body.trades.length, 0);
+    assert.strictEqual((await call(port, 'GET', '/api/me/trades?mint=' + M + '&limit=1', null, A)).body.trades.length, 1, 'and limited');
+    const sec = await call(port, 'GET', '/api/bars?pair=' + tokPair + '&res=1s&limit=5');
+    assert.ok(sec.status === 200 && sec.body.bars.length === 5, '1s bars through the API');
 
     assert.strictEqual((await call(port, 'POST', '/api/me/nickname', { nickname: '<b>x</b>' }, A)).status, 400);
     assert.strictEqual((await call(port, 'POST', '/api/me/nickname', { nickname: 'Ana Maria' }, A)).status, 200);

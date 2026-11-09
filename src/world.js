@@ -19,6 +19,8 @@ const ANCHOR_PULL = 1 / 600;         // per second
 const WANDER_TAU = 3600;             // seconds
 const REGIME_VOL = [0.55, 1, 2.8];   // calm, normal, frenzy
 const REGIME_VOLUME = [0.6, 1, 8];
+const SUB_RES = { '1s': 1, '15s': 15, '30s': 30 };   // built from the per-second ticks
+const MAX_TICKS = 3600;              // 1 hour of 1-second ticks per token
 const RES_SEC = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, 'D': 86400 };
 
 function clamp(x, lo, hi) { return x < lo ? lo : x > hi ? hi : x; }
@@ -130,6 +132,8 @@ exports.create = function (opts) {
     };
     if (!applyReal(t, seed, nowMs)) return null;
     backfill(t, nowMs);
+    t.athP = t.candles.reduce(function (m, c) { return c.high > m ? c.high : m; }, 0);
+    seedTicks(t, nowMs);
     tokens[t.mint] = t; byPair[t.pair] = t.mint;
     if (!lastStep) lastStep = nowMs;
     t.snap = snapshotOf(t, nowMs);
@@ -143,6 +147,45 @@ exports.create = function (opts) {
   w.size = function () { return Object.keys(tokens).length; };
   w.mints = function () { return Object.keys(tokens); };
   w.remove = function (mint) { const t = tokens[mint]; if (t) { delete byPair[t.pair]; delete tokens[mint]; } };
+
+  // The last ~10 minutes at 1-second resolution, drawn inside each 1-minute candle (a bridge from its open to its close that
+  // touches its high and low), so the 1s / 15s / 30s charts have history from the first second.
+  function seedTicks(t, nowMs) {
+    const nowSec = Math.floor(nowMs / 1000), tk = { T: [], P: [], V: [], B: [], S: [] }, n = t.candles.length;
+    for (let i = Math.max(0, n - 11); i < n; i++) {
+      const c = t.candles[i], last = i === n - 1, secs = last ? Math.max(1, nowSec - c.time + 1) : 60;
+      const o = Math.log(c.open), cl = last ? t.lnP : Math.log(c.close), lo = Math.log(c.low), hi = Math.log(c.high);
+      const sdv = Math.max(hi - lo, 1e-9) / (2 * Math.sqrt(secs)), iHi = Math.floor(rng() * secs), iLo = Math.floor(rng() * secs);
+      const w = new Array(secs); let acc = 0;
+      for (let k = 0; k < secs; k++) { acc += gauss(rng); w[k] = acc; }
+      for (let k = 0; k < secs; k++) {
+        const f = secs > 1 ? k / (secs - 1) : 1;
+        let x = clamp(o + (cl - o) * f + sdv * (w[k] - f * w[secs - 1]), lo, hi);
+        if (k === iHi) x = hi; if (k === iLo) x = lo;
+        if (k === 0) x = o; if (k === secs - 1) x = cl;
+        const v = c.volume / 60 * Math.exp(0.5 * gauss(rng) - 0.125), trades = poisson(rng, v / clamp(t.real.liquidity * 0.003, 15, 400));
+        const b = Math.round(trades * clamp(0.5 + 0.1 * gauss(rng), 0.3, 0.7));
+        tk.T.push(c.time + k); tk.P.push(Math.exp(x)); tk.V.push(v); tk.B.push(b); tk.S.push(trades - b);
+      }
+    }
+    t.ticks = tk;
+  }
+  function pushTick(t, sec, price, v, b, s) {
+    const tk = t.ticks, i = tk.T.length - 1;
+    if (i >= 0 && sec <= tk.T[i]) { tk.P[i] = price; tk.V[i] += v; tk.B[i] += b; tk.S[i] += s; return; }
+    tk.T.push(sec); tk.P.push(price); tk.V.push(v); tk.B.push(b); tk.S.push(s);
+    if (tk.T.length > MAX_TICKS + 200) { const cut = tk.T.length - MAX_TICKS; tk.T.splice(0, cut); tk.P.splice(0, cut); tk.V.splice(0, cut); tk.B.splice(0, cut); tk.S.splice(0, cut); }
+  }
+  function subBars(t, step, limit) {
+    const tk = t.ticks, out = [];
+    let cur = null;
+    for (let i = 0; i < tk.T.length; i++) {
+      const bt = Math.floor(tk.T[i] / step) * step, p = tk.P[i];
+      if (!cur || cur.time !== bt) { const o = cur ? cur.close : (i ? tk.P[i - 1] : p); cur = { time: bt, open: o, high: Math.max(o, p), low: Math.min(o, p), close: p, volume: tk.V[i] }; out.push(cur); }
+      else { if (p > cur.high) cur.high = p; if (p < cur.low) cur.low = p; cur.close = p; cur.volume += tk.V[i]; }
+    }
+    return out.slice(-limit);
+  }
 
   function roll(t, sec) {    // keep one candle per minute, no gaps
     const mt = Math.floor(sec / 60) * 60;
@@ -184,6 +227,8 @@ exports.create = function (opts) {
     const trades = poisson(rng, v / clamp(liq * 0.003, 15, 400)), share = 0.5 + 0.15 * clamp(d / (2 * sig), -1, 1);
     const b = Math.round(trades * share);
     t.simBuys += b; t.simSells += trades - b;
+    if (price > t.athP) t.athP = price;
+    pushTick(t, Math.floor(ms / 1000), price, v, b, trades - b);
   }
 
   function snapshotOf(t, nowMs) {
@@ -191,13 +236,19 @@ exports.create = function (opts) {
     const ref = function (m) { return t.candles[Math.max(0, n - 1 - m)].open; };
     const chg = function (m) { const p0 = ref(m); return p0 > 0 ? (price / p0 - 1) * 100 : 0; };
     const sumV = function (m) { let s = 0; for (let i = Math.max(0, n - m); i < n; i++) s += t.candles[i].volume; return s; };
+    const tk = t.ticks, from = Math.max(0, tk.T.length - 300), flow = { vol: 0, buys: 0, sells: 0, buyVol: 0, sellVol: 0 };
+    for (let i = from; i < tk.T.length; i++) {
+      const tr = tk.B[i] + tk.S[i], share = tr ? tk.B[i] / tr : 0.5;
+      flow.vol += tk.V[i]; flow.buys += tk.B[i]; flow.sells += tk.S[i]; flow.buyVol += tk.V[i] * share; flow.sellVol += tk.V[i] * (1 - share);
+    }
     t.lastBuys = Math.max(t.lastBuys, t.baseBuys + t.simBuys); t.lastSells = Math.max(t.lastSells, t.baseSells + t.simSells);
     return {
       mint: t.mint, symbol: t.symbol, name: t.name, pair: t.pair, dex: t.dex, price: price,
       liquidity: t.real.liquidity * Math.sqrt(price / t.real.price) * t.lf, marketCap: price * t.supply,
       change: { m5: chg(5), h1: chg(60), h6: chg(360), h24: chg(1440) },
-      volume: { m5: sumV(5), h1: sumV(60), h6: sumV(360), h24: sumV(1440) },
-      buys24: t.lastBuys, sells24: t.lastSells, createdAt: t.createdAt, icon: t.icon, t: nowMs, sim: true
+      volume: { m5: flow.vol, h1: sumV(60), h6: sumV(360), h24: sumV(1440) },   // 5m comes from the exact last 300 s of ticks
+      buys24: t.lastBuys, sells24: t.lastSells, createdAt: t.createdAt, icon: t.icon, t: nowMs, sim: true,
+      supply: t.supply, ath: Math.max(t.athP, price) * t.supply, flow5m: flow
     };
   }
 
@@ -219,6 +270,7 @@ exports.create = function (opts) {
   // Candles for a period, built from the 1-minute candles (the last one is still forming).
   w.bars = function (mint, res, limit) {
     const t = tokens[mint]; if (!t) return null;
+    if (SUB_RES[res]) return subBars(t, SUB_RES[res], clamp(Math.floor(num(limit)) || 300, 1, 300));
     const step = RES_SEC[res] || RES_SEC['15m'], out = [];
     let cur = null;
     for (let i = 0; i < t.candles.length; i++) {

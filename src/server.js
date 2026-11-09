@@ -24,6 +24,7 @@ function send(res, code, obj) {
   res.end(JSON.stringify(obj));
 }
 function fail(res, code, msg) { send(res, code, { error: msg }); }
+function clampInt(v, lo, hi, dflt) { const n = Math.floor(Number(v)); return isFinite(n) && n >= lo ? Math.min(n, hi) : dflt; }
 
 // ---- simple per-IP rate limiter (in memory) ----
 const hits = {};
@@ -142,7 +143,9 @@ async function api(req, res, url) {
   }
   if (p === '/api/me/trades' && m === 'GET') {
     const me = account(req, res); if (!me) return;
-    return send(res, 200, { trades: me.acct.trades.slice(0, 100) });
+    const only = q.get('mint'), lim = clampInt(q.get('limit'), 1, 500, 100);
+    const list = only && market.isMint(only) ? me.acct.trades.filter(function (t) { return t.mint === only; }) : me.acct.trades;
+    return send(res, 200, { trades: list.slice(0, lim) });
   }
   if (p === '/api/me/nickname' && m === 'POST') {
     const me = account(req, res); if (!me) return;

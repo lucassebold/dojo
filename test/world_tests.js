@@ -125,6 +125,35 @@ test('catching up after a long pause does not stall or explode', function () {
   assert.ok(w.bars('MID', '1m', 300).every(function (c, i, a) { return !i || c.time - a[i - 1].time === 60; }), 'no gaps in the candles');
 });
 
+test('1s / 15s / 30s candles exist from the start, are valid and stay inside their 1-minute candle', function () {
+  const w = mkWorld(12); run(w, 1);
+  ['big', 'mid', 'thin', 'dump'].forEach(function (k) {
+    const mint = SEEDS[k].mint, m1 = w.bars(mint, '1m', 300);
+    ['1s', '15s', '30s'].forEach(function (res) {
+      const bars = w.bars(mint, res, 300), step = { '1s': 1, '15s': 15, '30s': 30 }[res];
+      assert.ok(bars.length >= (res === '1s' ? 250 : 20), k + ' ' + res + ' has ' + bars.length + ' candles');
+      bars.forEach(function (c, i) {
+        assert.ok([c.open, c.high, c.low, c.close, c.volume].every(isFinite) && c.low > 0 && c.high >= Math.max(c.open, c.close) - 1e-15 && c.low <= Math.min(c.open, c.close) + 1e-15, k + ' ' + res + ' bad candle');
+        if (i) assert.ok(c.time > bars[i - 1].time && (c.time - bars[i - 1].time) % step === 0);
+      });
+    });
+    // a 15 s candle in the middle of the hour sits inside the 1-minute candle that contains it
+    const s15 = w.bars(mint, '15s', 300), c = s15[s15.length - 30], parent = m1.filter(function (b) { return b.time <= c.time && c.time < b.time + 60; })[0];
+    assert.ok(parent && c.high <= parent.high * 1.0000001 && c.low >= parent.low * 0.9999999, k + ' 15s candle escapes its minute');
+  });
+});
+
+test('5-minute flow (volume, buys, sells) and the all-time high are consistent', function () {
+  const w = mkWorld(13); run(w, 2);
+  ['big', 'mid', 'thin', 'dump'].forEach(function (k) {
+    const s = w.snapshot(SEEDS[k].mint), f = s.flow5m;
+    assert.ok(f.vol > 0 && f.buys > 0 && f.sells > 0, k + ' has no flow');
+    near(f.buyVol + f.sellVol, f.vol, f.vol * 1e-9 + 1e-9);
+    assert.ok(Math.abs(f.vol / s.volume.m5 - 1) < 0.2, k + ' 5m flow volume ' + f.vol + ' vs 5m candle volume ' + s.volume.m5);
+    assert.ok(s.ath >= s.marketCap * (1 - 1e-12), k + ' ATH below the current market cap');
+  });
+});
+
 function near(a, b, eps) { assert.ok(Math.abs(a - b) <= eps, a + ' != ' + b); }
 
 let failed = 0;

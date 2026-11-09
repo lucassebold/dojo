@@ -10,6 +10,11 @@ function compact(n) { n = Number(n) || 0; const a = Math.abs(n); if (a >= 1e9) r
 function price(p) {
   p = Number(p) || 0; if (!p) return '$0';
   if (p >= 1) return '$' + p.toLocaleString('en-US', { maximumFractionDigits: 4 });
+  const zeros = Math.floor(-Math.log10(p));
+  if (zeros >= 2) {   // 0.0₅ 16: the small number counts the zeros after the decimal point, the way trading terminals write tiny prices
+    const digits = String(Math.round(p * Math.pow(10, zeros + 3))).replace(/0+$/, '') || '0';
+    return '$0.0' + String(zeros).replace(/\d/g, function (d) { return '\u2080\u2081\u2082\u2083\u2084\u2085\u2086\u2087\u2088\u2089'.charAt(d); }) + digits;
+  }
   const d = Math.min(10, Math.max(4, Math.ceil(-Math.log10(p)) + 3));
   return '$' + p.toFixed(d);
 }
@@ -261,54 +266,191 @@ function newPairsPage() {
 }
 
 // ---------- token page ----------
+// A pro-terminal chart: candles + volume, a two-line legend that follows the cursor, Market cap or Price on the axis, your buys and
+// sells drawn on the candles, a dashed line at your average entry coloured by your P&L, zoom shortcuts, log / % scales, and the
+// Bought / Sold / Holding / PnL block under the order panel. Candles come straight from the simulated market, so they never wait on an API.
+const CHART_TFS = ['1s', '15s', '30s', '1m', '5m', '15m', '1h', '4h', 'D'];
+const TF_STEP = { '1s': 1, '15s': 15, '30s': 30, '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, 'D': 86400 };
+const RANGES = [['5m', 300], ['15m', 900], ['1h', 3600], ['6h', 21600], ['24h', 86400]];
+const TZ = -new Date().getTimezoneOffset() * 60;      // chart times are shown in the viewer's local time, like the terminal does
+function clock(t) { return new Date(t).toLocaleTimeString('en-GB'); }
+function utcLabel() { const h = -new Date().getTimezoneOffset() / 60; return 'UTC' + (h >= 0 ? '+' : '') + h; }
+
 function tokenPage(mint) {
   view.innerHTML = '<div class="tokpage"><div class="tokmain"><div id="thead" class="thead"><span class="muted">Loading...</span></div>' +
-    '<div class="tfs" id="tfs"></div><div id="chart"></div><div class="tokinfo" id="tinfo"></div></div><aside class="tokside" id="side"></aside></div>';
-  let snap = null, res = '15m', series = null, vol = null, lastTime = 0, side = 'buy', amount = null, quoteSeq = 0, quoteT = null, busy = false;
+    '<div class="charttools"><div class="tfs" id="tfs"></div><div class="toolr"><button id="hideall" class="tbtn" title="Hide your buy/sell arrows and entry line">Hide All</button>' +
+    '<div class="modes" id="modes"><button data-m="mc">MarketCap</button><span>/</span><button data-m="price">Price</button></div></div></div>' +
+    '<div class="chartwrap"><div class="legend" id="legend"></div><div id="chart"></div></div>' +
+    '<div class="chartbar"><div class="ranges" id="ranges"></div><div class="barr"><span id="clock" class="muted"></span><button id="bpct" class="tbtn">%</button><button id="blog" class="tbtn">log</button><button id="bauto" class="tbtn on">auto</button></div></div>' +
+    '<div class="btabs" id="btabs"><button data-t="trades" class="on">Trades</button><button data-t="positions">Positions</button><button data-t="info">Info &amp; risk</button></div>' +
+    '<div class="tokinfo" id="bpane"></div></div><aside class="tokside" id="side"></aside></div>';
+  let snap = null, risk = null, res = '1m', mode = 'mc', tab = 'trades', series = null, vol = null, entryLine = null, hideMarks = false, scaleMode = 0, autoScale = true;
+  let rawBars = [], byTime = {}, cursorTime = null, mult = 1, myTrades = [], side = 'buy', quoteSeq = 0, quoteT = null, busy = false;
+  try { mode = localStorage.getItem('dojo_chart_mode') === 'price' ? 'price' : 'mc'; } catch (e) { /* storage blocked */ }
 
-  ['1m', '5m', '15m', '1h', '4h', 'D'].forEach(function (r) {
+  CHART_TFS.forEach(function (r) {
     const b = document.createElement('button'); b.textContent = r === 'D' ? '1D' : r; b.className = r === res ? 'on' : '';
-    b.addEventListener('click', function () { res = r; Array.prototype.forEach.call($('#tfs').children, function (x) { x.classList.remove('on'); }); b.classList.add('on'); lastTime = 0; if (series) { series.setData([]); vol.setData([]); } loadBars(true); });
+    b.addEventListener('click', function () {
+      res = r; Array.prototype.forEach.call($('#tfs').children, function (x) { x.classList.toggle('on', x === b); });
+      rawBars = []; byTime = {}; if (series) { series.setData([]); vol.setData([]); series.setMarkers([]); }
+      if (chart) chart.applyOptions({ timeScale: { secondsVisible: TF_STEP[r] < 60 } });
+      loadBars(true);
+    });
     $('#tfs').appendChild(b);
   });
+  RANGES.forEach(function (r) {
+    const b = document.createElement('button'); b.textContent = r[0];
+    b.addEventListener('click', function () {
+      if (!chart || !rawBars.length) return;
+      const last = rawBars[rawBars.length - 1].time + TZ;
+      chart.timeScale().setVisibleRange({ from: last - r[1], to: last + TF_STEP[res] * 3 });
+    });
+    $('#ranges').appendChild(b);
+  });
+  function paintModes() { Array.prototype.forEach.call($('#modes').querySelectorAll('button'), function (b) { b.classList.toggle('on', b.getAttribute('data-m') === mode); }); }
+  $('#modes').addEventListener('click', function (e) {
+    const b = e.target.closest('button'); if (!b) return;
+    mode = b.getAttribute('data-m'); try { localStorage.setItem('dojo_chart_mode', mode); } catch (er) { /* storage blocked */ }
+    paintModes(); if (series) { applyScale(); series.setData(rawBars.map(conv)); paintEntry(); showLegend(); }
+  });
+  paintModes();
+  $('#hideall').addEventListener('click', function () { hideMarks = !hideMarks; $('#hideall').classList.toggle('on', hideMarks); paintMarkers(); paintEntry(); });
+  function setScale(m) {
+    scaleMode = scaleMode === m ? 0 : m;
+    $('#bpct').classList.toggle('on', scaleMode === 2); $('#blog').classList.toggle('on', scaleMode === 1);
+    if (chart) chart.priceScale('right').applyOptions({ mode: scaleMode });
+  }
+  $('#bpct').addEventListener('click', function () { setScale(2); });
+  $('#blog').addEventListener('click', function () { setScale(1); });
+  $('#bauto').addEventListener('click', function () { autoScale = !autoScale; $('#bauto').classList.toggle('on', autoScale); if (chart) chart.priceScale('right').applyOptions({ autoScale: autoScale }); });
+  every(1000, function () { const c = $('#clock'); if (c) c.textContent = new Date().toLocaleTimeString('en-GB') + ' ' + utcLabel(); });
 
+  function position() { return ME && ME.positions.filter(function (p) { return p.mint === mint; })[0] || null; }
+  const unit = function () { return mode === 'mc' ? mult : 1; };
+  const conv = function (b) { const m = unit(); return { time: b.time + TZ, open: b.open * m, high: b.high * m, low: b.low * m, close: b.close * m }; };
+  const fmtVal = function (v) { return mode === 'mc' ? compact(v).slice(1) : price(v).slice(1); };   // no $ on the chart, like the terminal
+
+  // ---- header, side panel blocks, bottom panel ----
   function head() {
-    const s = snap;
-    $('#thead').innerHTML = '<div class="name">' + icon(s.icon) + '<div><b style="font-size:16px">' + esc(s.symbol) + '</b><br><span class="muted">' + esc(s.name) + '</span></div></div>' +
-      '<div class="stat"><span>Price <i class="simtag" title="Simulated price, based on the real market">sim</i></span><b>' + price(s.price) + '</b></div>' +
+    const s = snap, sup = s.supply || (s.price > 0 ? s.marketCap / s.price : 0);
+    $('#thead').innerHTML = '<div class="name">' + icon(s.icon) + '<div><b style="font-size:16px">' + esc(s.symbol) + '</b> <span class="muted">' + esc(s.name) + '</span><br><span class="up">' + (s.createdAt ? esc(ago(s.createdAt).replace(' ago', '')) : '') + '</span> <span class="simtag" title="Simulated price, based on the real market">sim</span></div></div>' +
+      '<div class="bigmc">' + compact(s.marketCap) + '</div>' +
+      '<div class="stat"><span>Price</span><b>' + price(s.price) + '</b></div>' +
+      '<div class="stat"><span>Liquidity</span><b>' + compact(s.liquidity) + '</b></div>' +
+      '<div class="stat"><span>Supply</span><b>' + qtyShort(sup) + '</b></div>' +
+      '<div class="stat"><span>ATH</span><b>' + compact(s.ath || s.marketCap) + '</b></div>' +
       '<div class="stat"><span>5m</span><b class="' + cls(s.change.m5) + '">' + pct(s.change.m5) + '</b></div>' +
       '<div class="stat"><span>1h</span><b class="' + cls(s.change.h1) + '">' + pct(s.change.h1) + '</b></div>' +
-      '<div class="stat"><span>24h</span><b class="' + cls(s.change.h24) + '">' + pct(s.change.h24) + '</b></div>' +
-      '<div class="stat"><span>Liquidity</span><b>' + compact(s.liquidity) + '</b></div>' +
-      '<div class="stat"><span>Market cap</span><b>' + compact(s.marketCap) + '</b></div>' +
-      '<div class="stat"><span>24h volume</span><b>' + compact(s.volume.h24) + '</b></div>';
+      '<div class="stat"><span>24h</span><b class="' + cls(s.change.h24) + '">' + pct(s.change.h24) + '</b></div>';
   }
-  function info(risk) {
-    const s = snap, age = s.createdAt ? ago(s.createdAt).replace(' ago', '') : '?';
-    $('#tinfo').innerHTML = '<div class="card"><div class="row"><b>Risk</b><span class="badge ' + esc(risk.label) + '">' + esc(risk.label) + ' (' + risk.score + '/100)</span></div>' +
-      (risk.reasons.length ? '<ul style="margin:8px 0 0;padding-left:18px" class="muted">' + risk.reasons.map(function (r) { return '<li>' + esc(r.text) + '</li>'; }).join('') + '</ul>' : '<p class="muted" style="margin:8px 0 0">Nothing unusual in the public data. That is not a guarantee.</p>') + '</div>' +
-      '<div class="card"><div class="kv"><span>Pair age</span><b>' + esc(age) + '</b></div><div class="kv"><span>Buys / sells (24h)</span><b>' + s.buys24 + ' / ' + s.sells24 + '</b></div>' +
-      '<div class="kv"><span>Exchange</span><b>' + esc(s.dex) + '</b></div><div class="kv"><span>Address</span><b class="mono">' + esc(s.mint.slice(0, 6)) + '...' + esc(s.mint.slice(-4)) + '</b></div></div>';
+  function qtyShort(n) { n = Number(n) || 0; return n >= 1e9 ? (n / 1e9).toFixed(2) + 'B' : n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'K' : n.toFixed(0); }
+  function flowBlock() {
+    const el = $('#flow'); if (!el || !snap || !snap.flow5m) return;
+    const f = snap.flow5m, net = f.buyVol - f.sellVol, tot = f.buyVol + f.sellVol || 1;
+    el.innerHTML = '<div class="fcell"><span>5m Vol</span><b>' + compact(f.vol) + '</b></div><div class="fcell"><span>Buys</span><b class="up">' + f.buys + ' / ' + compact(f.buyVol) + '</b></div>' +
+      '<div class="fcell"><span>Sells</span><b class="down">' + f.sells + ' / ' + compact(f.sellVol) + '</b></div><div class="fcell"><span>Net Vol</span><b class="' + cls(net) + '">' + (net >= 0 ? '+' : '-') + compact(Math.abs(net)) + '</b></div>' +
+      '<div class="fbar"><i style="width:' + (f.buyVol / tot * 100).toFixed(1) + '%"></i></div>';
+  }
+  function pnlBlock() {
+    const el = $('#pnl'); if (!el) return;
+    let bought = 0, sold = 0;
+    myTrades.forEach(function (t) { if (t.side === 'buy') bought += t.usd; else sold += t.usd; });
+    const pos = position(), holding = pos ? pos.value : 0, pnl = holding + sold - bought, pc = bought ? pnl / bought * 100 : 0, none = !myTrades.length;
+    const cell = function (label, val, c) { return '<div class="pcell"><span>' + label + '</span><b class="' + (c || '') + '">' + val + '</b></div>'; };
+    el.innerHTML = cell('Bought', none ? money(0) : money(bought)) + cell('Sold', none ? money(0) : money(sold)) + cell('Holding', money(holding)) +
+      cell('PnL', (pnl >= 0 ? '+' : '') + money(pnl) + ' <small>(' + (pc >= 0 ? '+' : '') + pc.toFixed(0) + '%)</small>', none ? 'muted' : cls(pnl));
+  }
+  function paintBottom() {
+    Array.prototype.forEach.call($('#btabs').children, function (b) { b.classList.toggle('on', b.getAttribute('data-t') === tab); });
+    const el = $('#bpane'); if (!el) return;
+    if (tab === 'trades') {
+      const sup = snap && snap.price > 0 ? snap.marketCap / snap.price : 1;
+      el.innerHTML = myTrades.length ? '<div class="scroll"><table><tr><th>Time</th><th>Type</th><th class="r">Market cap</th><th class="r">Price</th><th class="r">Amount</th><th class="r">Value</th><th class="r">Fee</th><th class="r">P&amp;L</th></tr>' +
+        myTrades.map(function (t) {
+          return '<tr><td class="muted">' + clock(t.t) + '</td><td class="' + (t.side === 'buy' ? 'up' : 'down') + '"><b>' + (t.side === 'buy' ? 'Buy' : 'Sell') + '</b></td><td class="r">' + compact(t.price * sup) + '</td><td class="r">' + price(t.price) +
+            '</td><td class="r">' + qty(t.qty) + '</td><td class="r">' + money(t.usd) + '</td><td class="r muted">' + money(t.fee) + '</td><td class="r ' + cls(t.pnl) + '">' + (t.pnl == null ? '-' : money(t.pnl)) + '</td></tr>';
+        }).join('') + '</table></div>'
+        : '<div class="empty" style="border:0">You have not traded ' + (snap ? esc(snap.symbol) : 'this token') + ' yet. Your buys and sells will show here and on the chart.</div>';
+    } else if (tab === 'positions') {
+      const ps = ME ? ME.positions : [];
+      el.innerHTML = ps.length ? '<div class="scroll"><table><tr><th>Token</th><th class="r">Amount</th><th class="r">Avg entry</th><th class="r">Price</th><th class="r">Exit value</th><th class="r">P&amp;L</th></tr>' +
+        ps.map(function (p) { return '<tr><td><a href="#/token/' + esc(p.mint) + '"><b>' + esc(p.symbol) + '</b></a></td><td class="r">' + qty(p.qty) + '</td><td class="r">' + price(p.avgPrice) + '</td><td class="r">' + price(p.price) + '</td><td class="r">' + money(p.value) + '</td><td class="r ' + cls(p.pnl) + '">' + money(p.pnl) + ' <small>(' + pct(p.pnlPct) + ')</small></td></tr>'; }).join('') + '</table></div>'
+        : '<div class="empty" style="border:0">No open positions.</div>';
+    } else if (risk && snap) {
+      const s = snap, age = s.createdAt ? ago(s.createdAt).replace(' ago', '') : '?';
+      el.innerHTML = '<div class="card"><div class="row"><b>Risk</b><span class="badge ' + esc(risk.label) + '">' + esc(risk.label) + ' (' + risk.score + '/100)</span></div>' +
+        (risk.reasons.length ? '<ul style="margin:8px 0 0;padding-left:18px" class="muted">' + risk.reasons.map(function (r) { return '<li>' + esc(r.text) + '</li>'; }).join('') + '</ul>' : '<p class="muted" style="margin:8px 0 0">Nothing unusual in the data. That is not a guarantee.</p>') + '</div>' +
+        '<div class="card"><div class="kv"><span>Pair age</span><b>' + esc(age) + '</b></div><div class="kv"><span>Buys / sells (24h)</span><b>' + s.buys24 + ' / ' + s.sells24 + '</b></div>' +
+        '<div class="kv"><span>Exchange</span><b>' + esc(s.dex) + '</b></div><div class="kv"><span>Address</span><b class="mono">' + esc(s.mint.slice(0, 6)) + '...' + esc(s.mint.slice(-4)) + '</b></div></div>';
+    }
+  }
+  $('#btabs').addEventListener('click', function (e) { const b = e.target.closest('button'); if (!b) return; tab = b.getAttribute('data-t'); paintBottom(); });
+
+  function loadTrades() {
+    return api('/api/me/trades?mint=' + encodeURIComponent(mint) + '&limit=500').then(function (j) { myTrades = j.trades; pnlBlock(); paintBottom(); paintMarkers(); }).catch(function () {});
   }
   function loadSnap() {
     return api('/api/token/' + mint).then(function (j) {
-      snap = j.token; head(); info(j.risk); if (!$('#amt')) renderSide(false);
+      snap = j.token; risk = j.risk; head(); flowBlock(); pnlBlock(); renderPos(); paintEntry();
+      if (!$('#amt')) renderSide(false);
+      if (tab === 'info') paintBottom();
     });
   }
-  // The prices come from the simulated market on our own server, so the chart is never waiting on a rate-limited API:
-  // the full history is loaded once, then the last candles are refreshed every 2 s straight from the simulation.
+  function refreshAll() { return refreshMe().then(function () { pnlBlock(); renderPos(); paintEntry(); if (tab === 'positions') paintBottom(); }); }
+
+  // ---- chart ----
+  function fmt(p) { const d = p >= 1 ? 4 : Math.min(10, Math.ceil(-Math.log10(p)) + 4); return { type: 'price', precision: d, minMove: Math.pow(10, -d) }; }
+  function applyScale() {
+    if (!series) return;
+    series.applyOptions({ priceFormat: { type: 'custom', minMove: mode === 'mc' ? 0.01 : Math.max(fmt(snap.price || 0.0001).minMove, 1e-12), formatter: function (v) { return fmtVal(v); } } });
+  }
+  function volPoint(b) { return { time: b.time + TZ, value: b.volume || 0, color: b.close >= b.open ? '#26d0a066' : '#f0504e66' }; }
   function ensureChart() {
     if (chart || !snap) return;
     const el = $('#chart');
-    chart = LightweightCharts.createChart(el, { height: 440, width: el.clientWidth, layout: { background: { color: '#09060f' }, textColor: '#9a8fb3' }, grid: { vertLines: { color: '#1a1228' }, horzLines: { color: '#1a1228' } }, crosshair: { mode: 0 }, timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#261b3a' }, rightPriceScale: { borderColor: '#261b3a', scaleMargins: { top: 0.08, bottom: 0.28 } } });
-    series = chart.addCandlestickSeries({ upColor: '#22c55e', downColor: '#ef4444', borderVisible: false, wickUpColor: '#22c55e', wickDownColor: '#ef4444', priceFormat: fmt(snap.price || 0.0001) });
-    vol = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: '', lastValueVisible: false, priceLineVisible: false });
-    vol.priceScale().applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+    chart = LightweightCharts.createChart(el, {
+      height: 520, width: el.clientWidth, layout: { background: { color: '#09060f' }, textColor: '#9a8fb3' },
+      grid: { vertLines: { color: '#150f20' }, horzLines: { color: '#150f20' } }, crosshair: { mode: 0 },
+      timeScale: { timeVisible: true, secondsVisible: TF_STEP[res] < 60, borderColor: '#261b3a' },
+      rightPriceScale: { borderColor: '#261b3a', scaleMargins: { top: 0.08, bottom: 0.24 }, mode: scaleMode }
+    });
+    series = chart.addCandlestickSeries({ upColor: '#26d0a0', downColor: '#f0504e', borderVisible: false, wickUpColor: '#26d0a0', wickDownColor: '#f0504e', priceLineStyle: 1, priceLineWidth: 1 });
+    vol = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: '', lastValueVisible: true, priceLineVisible: false });
+    vol.priceScale().applyOptions({ scaleMargins: { top: 0.86, bottom: 0 } });
+    applyScale();
+    chart.subscribeCrosshairMove(function (p) { cursorTime = p && p.time ? p.time - TZ : null; showLegend(); });
     onResize = function () { if (chart) chart.applyOptions({ width: el.clientWidth }); };
     window.addEventListener('resize', onResize);
   }
-  function fmt(p) { const d = p >= 1 ? 4 : Math.min(10, Math.ceil(-Math.log10(p)) + 4); return { type: 'price', precision: d, minMove: Math.pow(10, -d) }; }
-  function volPoint(b) { return { time: b.time, value: b.volume || 0, color: b.close >= b.open ? '#22c55e55' : '#ef444455' }; }
+  // Two lines like the terminal: the candle under the cursor (the latest one when the cursor is away) and its volume
+  function showLegend() {
+    const el = $('#legend'); if (!el || !snap) return;
+    const b = (cursorTime && byTime[cursorTime]) || rawBars[rawBars.length - 1], tf = res === 'D' ? '1D' : res;
+    const title = '<b>' + esc(snap.name || snap.symbol) + '/USD</b> <span class="muted">on ' + esc(snap.dex || 'dex') + ' &middot; ' + tf + ' &middot; dojo &middot; ' + (mode === 'mc' ? 'Market cap' : 'Price') + '</span>';
+    if (!b) { el.innerHTML = title; return; }
+    const m = unit(), up = b.close >= b.open, c = up ? 'up' : 'down', d = (b.close - b.open) * m, ch = b.open ? (b.close / b.open - 1) * 100 : 0;
+    el.innerHTML = title + ' <span class="lg">O<i class="' + c + '">' + fmtVal(b.open * m) + '</i></span><span class="lg">H<i class="' + c + '">' + fmtVal(b.high * m) + '</i></span><span class="lg">L<i class="' + c + '">' + fmtVal(b.low * m) + '</i></span>' +
+      '<span class="lg">C<i class="' + c + '">' + fmtVal(b.close * m) + '</i></span><span class="lg"><i class="' + c + '">' + (d >= 0 ? '+' : '-') + fmtVal(Math.abs(d)) + ' (' + (ch >= 0 ? '+' : '') + ch.toFixed(2) + '%)</i></span>' +
+      '<div class="lgv">Volume <i class="' + c + '">' + compact(b.volume).slice(1) + '</i></div>';
+  }
+  // Your buys and sells, as arrows on the candle where they happened (only where that candle is on the chart)
+  function paintMarkers() {
+    if (!series) return;
+    const step = TF_STEP[res], ms = [];
+    if (!hideMarks) myTrades.slice().reverse().forEach(function (t) {
+      const bt = Math.floor(t.t / 1000 / step) * step; if (!byTime[bt]) return;
+      ms.push({ time: bt + TZ, position: t.side === 'buy' ? 'belowBar' : 'aboveBar', color: t.side === 'buy' ? '#26d0a0' : '#f0504e', shape: t.side === 'buy' ? 'arrowUp' : 'arrowDown', text: (t.side === 'buy' ? 'B ' : 'S ') + compact(t.usd) });
+    });
+    series.setMarkers(ms);
+  }
+  // A dashed line at your average entry, green when you are up and red when you are down, with the P&L on it
+  function paintEntry() {
+    if (!series) return;
+    const pos = position();
+    if (!pos || hideMarks) { if (entryLine) { series.removePriceLine(entryLine); entryLine = null; } return; }
+    const o = { price: pos.avgPrice * unit(), color: pos.pnl >= 0 ? '#26d0a0' : '#f0504e', lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: 'Entry ' + (pos.pnl >= 0 ? '+' : '') + pos.pnlPct.toFixed(1) + '%' };
+    if (entryLine) entryLine.applyOptions(o); else entryLine = series.createPriceLine(o);
+  }
   function loadBars(first) {
     const askedRes = res;
     if (!snap) return;
@@ -316,39 +458,55 @@ function tokenPage(mint) {
       if (res !== askedRes) return;      // the user already switched period
       ensureChart();
       const m = $('#chart').querySelector('.chartmsg'); if (m) m.remove();
-      series.setData(j.bars); vol.setData(j.bars.map(volPoint));
-      lastTime = j.bars.length ? j.bars[j.bars.length - 1].time : 0;
+      mult = snap.price > 0 ? snap.marketCap / snap.price : 1;
+      rawBars = j.bars; byTime = {}; rawBars.forEach(function (b) { byTime[b.time] = b; });
+      applyScale(); series.setData(rawBars.map(conv)); vol.setData(rawBars.map(volPoint));
+      paintMarkers(); paintEntry(); showLegend();
       if (first) chart.timeScale().fitContent();
     }).catch(function (e) {
       if (res === askedRes && !$('#chart').querySelector('.chartmsg')) $('#chart').insertAdjacentHTML('beforeend', '<div class="chartmsg note">' + esc(e.message) + '</div>');
     });
   }
+  // Every 2 s: the last candles, straight from the simulation
   function pollBars() {
-    if (!series || !lastTime) return;
+    if (!series || !rawBars.length) return;
     const askedRes = res;
     api('/api/bars?pair=' + encodeURIComponent(snap.pair) + '&res=' + res + '&limit=2').then(function (j) {
-      if (res !== askedRes || !series) return;
-      j.bars.forEach(function (b) { if (b.time >= lastTime) { series.update(b); vol.update(volPoint(b)); lastTime = b.time; } });
+      if (res !== askedRes || !series || !rawBars.length) return;
+      const lastT = rawBars[rawBars.length - 1].time;
+      j.bars.forEach(function (b) {
+        if (b.time < lastT) return;
+        if (b.time === lastT) rawBars[rawBars.length - 1] = b; else rawBars.push(b);
+        byTime[b.time] = b; series.update(conv(b)); vol.update(volPoint(b));
+      });
+      showLegend();
     }).catch(function () { /* the next poll tries again */ });
   }
 
-  // ---- trade panel ----
-  function position() { return ME && ME.positions.filter(function (p) { return p.mint === mint; })[0] || null; }
+  // ---- order panel ----
+  function renderPos() {
+    const el = $('#poscard'); if (!el || !snap) return;
+    const pos = position();
+    el.innerHTML = pos ? '<div class="row"><b>Your position</b><span class="' + cls(pos.pnl) + '">' + money(pos.pnl) + ' (' + pct(pos.pnlPct) + ')</span></div>' +
+      '<div class="kv"><span>Holding</span><b>' + qty(pos.qty) + ' ' + esc(pos.symbol) + '</b></div><div class="kv"><span>Avg entry</span><b>' + price(pos.avgPrice) + '</b></div><div class="kv"><span>Cost</span><b>' + money(pos.cost) + '</b></div><div class="kv"><span>Exit value</span><b>' + money(pos.value) + '</b></div>'
+      : '<span class="muted">You do not hold ' + esc(snap.symbol) + ' yet.</span>';
+  }
   function renderSide(keepInput) {
     if (!snap) return;
-    const pos = position(), prev = keepInput && $('#amt') ? $('#amt').value : '';
+    const prev = keepInput && $('#amt') ? $('#amt').value : '';
     const presets = side === 'buy' ? [50, 100, 500, 1000] : [25, 50, 75, 100];
-    $('#side').innerHTML = '<div class="seg"><button class="buy' + (side === 'buy' ? ' on' : '') + '" data-side="buy">Buy</button><button class="sell' + (side === 'sell' ? ' on' : '') + '" data-side="sell">Sell</button></div>' +
-      '<div class="row note"><span>Cash</span><b>' + (ME ? money(ME.cash) : '...') + '</b></div>' +
+    $('#side').innerHTML = '<div class="flow" id="flow"></div>' +
+      '<div class="seg"><button class="buy' + (side === 'buy' ? ' on' : '') + '" data-side="buy">Buy</button><button class="sell' + (side === 'sell' ? ' on' : '') + '" data-side="sell">Sell</button></div>' +
+      '<div class="row note"><span>Market &middot; Cash</span><b id="cashv">' + (ME ? money(ME.cash) : '...') + '</b></div>' +
       '<div class="presets">' + presets.map(function (p) { return '<button data-p="' + p + '">' + (side === 'buy' ? '$' + p : p + '%') + '</button>'; }).join('') + '</div>' +
-      '<label class="field"><span>' + (side === 'buy' ? 'Amount to spend (USD)' : 'Percent of your position to sell') + '</span><input id="amt" inputmode="decimal" autocomplete="off" placeholder="' + (side === 'buy' ? '100' : '100') + '" value="' + esc(prev) + '"></label>' +
+      '<label class="field"><span>' + (side === 'buy' ? 'Amount to spend (USD)' : 'Percent of your position to sell') + '</span><input id="amt" inputmode="decimal" autocomplete="off" placeholder="100" value="' + esc(prev) + '"></label>' +
       '<div class="preview" id="prev"><span class="muted">Enter an amount to see the fill.</span></div>' +
       '<button class="btn tradebtn ' + (side === 'buy' ? 'buy' : 'sell') + '" id="go" disabled>' + (side === 'buy' ? 'Buy ' : 'Sell ') + esc(snap.symbol) + '</button>' +
+      '<div class="pnlblock" id="pnl"></div>' +
       '<p class="note">Fills use the simulated price, the pool\'s liquidity (price impact) and a ' + esc(FEE) + '% fee, like a real order.</p>' +
-      '<div class="card" style="margin-top:14px">' + (pos ? '<div class="row"><b>Your position</b><span class="' + cls(pos.pnl) + '">' + money(pos.pnl) + ' (' + pct(pos.pnlPct) + ')</span></div>' +
-        '<div class="kv"><span>Holding</span><b>' + qty(pos.qty) + ' ' + esc(pos.symbol) + '</b></div><div class="kv"><span>Avg entry</span><b>' + price(pos.avgPrice) + '</b></div><div class="kv"><span>Cost</span><b>' + money(pos.cost) + '</b></div><div class="kv"><span>Exit value</span><b>' + money(pos.value) + '</b></div>'
-        : '<span class="muted">You do not hold ' + esc(snap.symbol) + ' yet.</span>') + '</div>';
-    Array.prototype.forEach.call(document.querySelectorAll('[data-side]'), function (b) { b.addEventListener('click', function () { side = b.getAttribute('data-side'); amount = null; renderSide(false); }); });
+      '<div class="card" id="poscard" style="margin-top:14px"></div>';
+    flowBlock(); pnlBlock(); renderPos();
+    Array.prototype.forEach.call(document.querySelectorAll('[data-side]'), function (b) { b.addEventListener('click', function () { side = b.getAttribute('data-side'); renderSide(false); }); });
     Array.prototype.forEach.call(document.querySelectorAll('[data-p]'), function (b) { b.addEventListener('click', function () { $('#amt').value = b.getAttribute('data-p'); onInput(); }); });
     $('#amt').addEventListener('input', onInput);
     $('#go').addEventListener('click', execute);
@@ -382,14 +540,15 @@ function tokenPage(mint) {
     api('/api/trade', { method: 'POST', body: b }).then(function (j) {
       setMe(j.me); const t = j.trade;
       toast((t.side === 'buy' ? 'Bought ' : 'Sold ') + qty(t.qty) + ' ' + t.symbol + ' at ' + price(t.price) + (t.pnl != null ? ' (' + (t.pnl >= 0 ? '+' : '') + money(t.pnl) + ')' : ''));
-      renderSide(false);
+      renderSide(false); loadTrades(); paintEntry();
     }).catch(function (e) { toast(e.message, true); onInput(); }).then(function () { busy = false; });
   }
 
-  Promise.all([refreshMe(), loadSnap()]).then(function () { renderSide(false); loadBars(true); }).catch(function (e) {
+  Promise.all([refreshMe(), loadSnap(), loadTrades()]).then(function () { renderSide(false); paintBottom(); loadBars(true); }).catch(function (e) {
     $('#thead').innerHTML = '<span class="down">' + esc(e.message) + '</span>';
   });
   every(2000, function () { loadSnap().catch(function () {}); });
+  every(2000, function () { refreshAll(); const c = $('#cashv'); if (c && ME) c.textContent = money(ME.cash); });
   every(2000, pollBars);
   every(30000, function () { loadBars(false); });
 }
