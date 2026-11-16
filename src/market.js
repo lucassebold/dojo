@@ -10,7 +10,18 @@ const Launchpad = require('./launchpad');
 
 const world = World.create({});
 let pinned = function () { return {}; };     // mints somebody holds: never removed from the market
-const lp = Launchpad.create({ world: world, rate: process.env.LAUNCH_RATE !== undefined ? Number(process.env.LAUNCH_RATE) : undefined, pinned: function () { return pinned(); } });
+const lp = Launchpad.create({ images: loadImages(), world: world, rate: process.env.LAUNCH_RATE !== undefined ? Number(process.env.LAUNCH_RATE) : undefined, pinned: function () { return pinned(); } });
+// the pictures of the made-up launches (public/img/tk, see tools/fetch_token_images.py), grouped by kind
+function loadImages() {
+  const out = { cat: [], photo: [], avatar: [] };
+  try {
+    fs.readdirSync(path.join(__dirname, '..', 'public', 'img', 'tk')).sort().forEach(function (f) {
+      const u = '/img/tk/' + f;
+      if (/^cat-/.test(f)) out.cat.push(u); else if (/^photo-/.test(f)) out.photo.push(u); else if (/^av-/.test(f)) out.avatar.push(u);
+    });
+  } catch (e) { /* no pictures: the page draws placeholders */ }
+  return out;
+}
 exports._world = world; exports._lp = lp;
 // one second of the market: the launchpad moves its launches, then every token takes a step
 function advance(now) { lp.tick(now); world.step(now); }

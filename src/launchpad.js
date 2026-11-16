@@ -4,10 +4,9 @@
 // graduate: when the simulated market cap crosses MIGRATE_MC the token "migrates" to a normal pool and moves to the third column.
 // The script only moves the ANCHOR price; the usual simulation (noise, regimes, jumps, volume, candles) runs on top of it, so a
 // launch trades and charts like any other token. Names, addresses and holder stats are made up: this is a practice market.
+const Names = require('./names');
 const MIGRATE_MC = 25000, FINAL_FROM = 0.35, SUPPLY = 1e9;
 const B58 = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-const PREFIX = ['Pepe', 'Doge', 'Shib', 'Bonk', 'Moon', 'Rocket', 'Giga', 'Chad', 'Based', 'Frog', 'Cat', 'Baby', 'Sol', 'Gold', 'Space', 'Ninja', 'Lord', 'Captain', 'Mega', 'Turbo', 'Dark', 'Pixel', 'Quantum', 'Fluffy', 'Grumpy', 'Sleepy', 'Happy', 'Wizard', 'Cyber', 'Tiny', 'Hyper', 'Lucky', 'Silly', 'Angry', 'Sneaky', 'Cosmic', 'Neon', 'Royal', 'Wild', 'Mini'];
-const SUFFIX = ['Coin', 'Inu', 'Cat', 'Dog', 'Frog', 'AI', 'Bot', 'Moon', 'Hat', 'Cult', 'Finance', 'DAO', 'Man', 'King', 'Bear', 'Bull', 'Rocket', 'Egg', 'Ape', 'Duck', 'Fish', 'Whale', 'Token', 'Pump', 'Gem', 'Wif', 'Nation', 'Club', 'Labs', 'Protocol'];
 const TYPES = [
   { id: 'dud',      p: 0.55, mT: [2200, 3800],   dur: [120, 600],   decay: 0.35, act: 0.6 },
   { id: 'meh',      p: 0.25, mT: [6000, 13000],  dur: [300, 1500],  decay: 0.4,  act: 1.5 },
@@ -85,13 +84,15 @@ exports.create = function (opts) {
   const pick = function (a) { return a[Math.floor(rng() * a.length)]; };
   const between = function (r) { return r[0] + rng() * (r[1] - r[0]); };
 
-  function makeName() {
-    const a = pick(PREFIX), b = pick(SUFFIX);
-    return { name: a + ' ' + b, symbol: (rng() < 0.5 ? a.slice(0, 4) + b.slice(0, 3) : rng() < 0.5 ? a : a.slice(0, 3) + b).toUpperCase().slice(0, 9) };
+  // a picture that fits the name: cat photos for cats, photos for concepts and things, cartoon avatars for slang and pets
+  const images = opts.images || {};
+  function pickImage(kind) {
+    const pool = kind === 'mixed' ? (rng() < 0.5 ? images.photo : images.avatar) : images[kind];
+    return pool && pool.length ? pool[Math.floor(rng() * pool.length)] : null;     // null: the page draws a placeholder
   }
 
   lp.spawn = function (now) {
-    const nm = makeName(), roll = rng();
+    const nm = Names.generate(rng), roll = rng();
     let acc = 0, type = TYPES[0];
     for (let i = 0; i < TYPES.length; i++) { acc += TYPES[i].p; if (roll < acc) { type = TYPES[i]; break; } }
     const m0 = 4000 + rng() * 1200, mint = rb58(40) + 'pump', pair = rb58(44), creator = rb58(44);
@@ -103,10 +104,10 @@ exports.create = function (opts) {
     };
     const meta = {
       launch: true, migrated: false, migratedAt: 0, progress: 0, holders: 1, top10: 85, dev: rec.dev0, snipers: rec.sniper0, insiders: rec.insider0, bundlers: rec.bundler0,
-      x: rng() < 0.6, tg: rng() < 0.35, web: rng() < 0.3, handle: '@' + nm.name.toLowerCase().replace(/[^a-z0-9]/g, ''), followers: Math.floor(Math.pow(rng(), 3) * 20000), creator: shortAddr(creator), dexPaid: false
+      x: rng() < 0.6, tg: rng() < 0.35, web: rng() < 0.3, handle: nm.handle, followers: Math.floor(Math.pow(rng(), 3) * 20000), creator: shortAddr(creator), dexPaid: false
     };
     world.add({
-      mint: mint, pair: pair, symbol: nm.symbol, name: nm.name, icon: null, dex: 'pump.fun', createdAt: now - 1000, price: m0 / SUPPLY, liquidity: liqFor(m0, false), marketCap: m0,
+      mint: mint, pair: pair, symbol: nm.symbol, name: nm.name, icon: pickImage(nm.image), dex: 'pump.fun', createdAt: now - 1000, price: m0 / SUPPLY, liquidity: liqFor(m0, false), marketCap: m0,
       change: { m5: 0, h1: 0, h6: 0, h24: 0 }, volume: { m5: m0 * 0.05, h1: m0 * 0.3, h6: m0 * 0.3, h24: m0 * 0.3 }, buys24: 2 + Math.floor(rng() * 6), sells24: Math.floor(rng() * 2),
       launch: true, pull: 1 / 20, sigmaScale: 0.55, meta: meta
     }, now);

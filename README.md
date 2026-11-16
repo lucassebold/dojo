@@ -49,7 +49,15 @@ sorteado no nascimento: **dud** 55% (some), **meh** 25%, **runner** 12% (chega p
 US$ 25 mil de market cap e migra: a coluna muda, a corretora vira `pumpswap`, e depois ele sobe ou cai). O roteiro só move
 a âncora do preço; o resto (ruído, euforia, saltos, volume, velas, gráfico de 1s) é o mesmo simulador dos outros tokens, então
 um lançamento se opera e se vê como qualquer moeda, com o impacto de preço de um poço pequeno. Holders, top 10, dev, snipers
-etc. evoluem com o tempo (holders crescem, top 10 e snipers caem, dev pode vender). Na coluna Migrated os graduados simulados
+etc. evoluem com o tempo (holders crescem, top 10 e snipers caem, dev pode vender). **Nomes e imagens** (`src/names.js`, `public/img/tk/`): os nomes imitam o estilo de uma launchpad de verdade (palavra solta em
+minúsculas, conceito em maiúsculas, ticker com expansão tipo `TLB Tiny Lazy Bear`, piadas de dinheiro, gírias, pets, hashtags) e
+**nunca usam pessoas ou marcas reais**: os bancos de palavras são comuns e um teste mantém uma lista de nomes reais fora deles.
+A imagem combina com o nome: foto de gato para nomes de gato, foto para conceitos e objetos, avatar de desenho para gírias e
+pets. As ~225 imagens (760 KB) vêm de fontes de licença livre (The Cat API, Lorem Picsum/Unsplash e DiceBear CC0; ver
+`public/img/tk/CREDITS.md`) e ficam no repositório, então o site não depende de serviço externo; para refazer o conjunto:
+`python tools/fetch_token_images.py` (precisa de Pillow). Sem as imagens a tela desenha um placeholder.
+
+Na coluna Migrated os graduados simulados
 dividem espaço com os tokens reais do mercado (pelo menos 10 vagas para eles). Ao ligar o servidor, os últimos 30 minutos de
 lançamentos são simulados de uma vez (`WARMUP_MIN`), para as colunas já nascerem cheias. Os lançamentos que não foram a lugar
 algum somem depois de ~25 min (e há um teto de 220 esperando), sem nunca remover quem você tem ou abriu nos últimos 10 min. Quem tem posição num lançamento nunca o perde: ele é salvo em `DATA_DIR/universe.json`.

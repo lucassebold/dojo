@@ -22,7 +22,7 @@ function qty(n) { n = Number(n) || 0; return n >= 1000 ? n.toLocaleString('en-US
 function pct(n, plus) { n = Number(n) || 0; return (n > 0 && plus !== false ? '+' : '') + n.toFixed(2) + '%'; }
 function cls(n) { return n > 0 ? 'up' : n < 0 ? 'down' : 'muted'; }
 function ago(t) { const s = Math.max(0, (Date.now() - t) / 1000); return s < 60 ? Math.floor(s) + 's ago' : s < 3600 ? Math.floor(s / 60) + 'm ago' : s < 86400 ? Math.floor(s / 3600) + 'h ago' : Math.floor(s / 86400) + 'd ago'; }
-function icon(u, size) { return u && /^https:\/\//.test(u) ? '<img src="' + esc(u) + '" alt="" loading="lazy" referrerpolicy="no-referrer">' : '<span class="ph"></span>'; }
+function icon(u, size) { return u && /^(https:\/\/|\/img\/)/.test(u) ? '<img src="' + esc(u) + '" alt="" loading="lazy" referrerpolicy="no-referrer">' : '<span class="ph"></span>'; }
 let toastT = null;
 function toast(msg, err) { const t = $('#toast'); t.textContent = msg; t.className = 'toast' + (err ? ' err' : ''); t.hidden = false; clearTimeout(toastT); toastT = setTimeout(function () { t.hidden = true; }, 4200); }
 
@@ -244,7 +244,7 @@ function ageShort(t) { const s = Math.max(0, (Date.now() - t) / 1000); return s 
 function pctShort(n) { return (Number(n) || 0).toFixed(n >= 10 ? 0 : 1) + '%'; }
 // Made-up tokens have no image: a gradient square with an emoji, the same one on the Pulse card and in the token header
 function emoFace(mint) { const h = hashStr(mint), hue = h % 360; return '<span class="emo" style="background:linear-gradient(135deg,hsl(' + hue + ' 70% 45%),hsl(' + ((hue + 50) % 360) + ' 70% 30%))">' + FACES[h % FACES.length] + '</span>'; }
-function tokFace(s) { return s.icon && /^https:\/\//.test(s.icon) ? icon(s.icon) : emoFace(s.mint); }
+function tokFace(s) { return s.icon && /^(https:\/\/|\/img\/)/.test(s.icon) ? icon(s.icon) : emoFace(s.mint); }
 
 // A number that rolls from its old value to the new one. Returns 1 / -1 when it moved up / down in a way you can see, else 0.
 function rollNum(el, to, fmtFn) {
@@ -267,11 +267,11 @@ const nbFmt = function (v) { return (v >= 0 ? '+' : '-') + compact(Math.abs(v));
 function fx(el, cls2) { el.classList.remove('fx-up', 'fx-down'); void el.offsetWidth; el.classList.add(cls2); }
 
 function pulseCard(c) {
-  const face = c.icon && /^https:\/\//.test(c.icon) ? '<img src="' + esc(c.icon) + '" alt="" loading="lazy" referrerpolicy="no-referrer">' : emoFace(c.mint);
+  const face = c.icon && /^(https:\/\/|\/img\/)/.test(c.icon) ? '<img src="' + esc(c.icon) + '" alt="" loading="lazy" referrerpolicy="no-referrer">' : emoFace(c.mint);
   const pill = function (key, label, tip) { return '<i class="pill" data-k="' + key + '" title="' + tip + '"><em>' + label + '</em> <b></b></i>'; };
   return '<div class="pcard" data-mint="' + esc(c.mint) + '" data-t="' + esc(c.createdAt) + '" style="--d:' + (-Math.random() * 3).toFixed(2) + 's"><a class="pmain" href="#/token/' + esc(c.mint) + '">' +
-    '<div class="pav"><div class="ring"><div class="face">' + face + '</div></div><span class="hb" data-f="holders"></span></div>' +
-    '<div class="pbody"><div class="pn"><b>' + esc(c.symbol) + '</b> <span class="muted pname">' + esc(c.name) + '</span><span class="tag pb" data-f="badge"></span>' + (c.fake ? ' <span class="tag simt" title="Made-up token, simulated price">SIM</span>' : '') + '</div>' +
+    '<div class="pav"><div class="ring"><div class="face">' + face + '</div></div><span class="hb" data-f="holders"></span><div class="paddr">' + esc(c.mint.slice(0, 4)) + '...' + esc(c.mint.slice(-4)) + '</div></div>' +
+    '<div class="pbody"><div class="pn"><b>' + esc(c.symbol) + '</b> <span class="muted pname">' + esc(c.name) + '</span><span class="tag pb" data-f="badge"></span>' + '</div>' +
     '<div class="pm"><span class="age" data-f="age"></span>' + (c.x ? '<span class="soc" title="X / Twitter">\u{1D54F}</span>' : '') + (c.tg ? '<span class="soc" title="Telegram">✈</span>' : '') + (c.web ? '<span class="soc" title="Website">\u{1F310}</span>' : '') + '<span class="dexp" data-f="dexp"></span><span class="muted">' + esc(c.handle) + '</span></div>' +
     '<div class="pstats">' + pill('top10', 'T10', 'Top 10 holders') + pill('dev', 'DEV', 'Dev holding') + pill('snipers', 'SNP', 'Snipers') + pill('insiders', 'INS', 'Insiders') + pill('bundlers', 'BND', 'Bundlers') + '</div></div></a>' +
     '<div class="pbox"><svg class="pspark" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true"><polygon points=""/><polyline points=""/></svg>' +

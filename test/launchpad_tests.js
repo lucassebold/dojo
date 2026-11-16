@@ -124,7 +124,8 @@ test('cards carry a normalised sparkline, a hot flag and the launch counters', f
   const cards = pulse.newPairs.concat(pulse.finalStretch, pulse.migrated);
   assert.ok(cards.length > 10);
   cards.forEach(function (c) {
-    assert.ok(Array.isArray(c.spark) && c.spark.length === 24 && c.spark.every(function (v) { return Number.isInteger(v) && v >= 0 && v <= 99; }), 'sparkline 0..99, 24 points');
+    const brandNew = c.createdAt > m.now() - 5000;     // a card born in the last seconds has too few points to draw a line yet
+    assert.ok(Array.isArray(c.spark) && (c.spark.length === 24 || (brandNew && c.spark.length === 0)) && c.spark.every(function (v) { return Number.isInteger(v) && v >= 0 && v <= 99; }), 'sparkline 0..99, 24 points');
     assert.strictEqual(typeof c.hot, 'boolean');
   });
   assert.ok(pulse.stats.launched > 200 && pulse.stats.migrated >= 0 && pulse.stats.perMin > 15 && pulse.stats.perMin < 50, 'counters ' + JSON.stringify(pulse.stats));
@@ -139,6 +140,31 @@ test('HOT stays a standout: about 15% of the cards, all of them moving clearly m
   assert.ok(hot.length >= all.length * 0.08 && hot.length <= all.length * 0.25, 'hot share ' + hot.length + '/' + all.length);
   assert.ok(Math.min.apply(null, hot.map(function (c) { return c.change5m; })) >= Math.max.apply(null, rest.map(function (c) { return c.change5m; })) - 1e-9, 'every hot card moved at least as much as every other card');
   assert.ok(hot.every(function (c) { return c.change5m >= 10; }), 'and at least +10% in 5 minutes');
+});
+
+test('names look like a real launchpad: varied, short, mixed casing, and never a real person or brand', function () {
+  const Names = require('../src/names'), rng = World.mulberry32(31), seen = {}, sample = [];
+  for (let i = 0; i < 3000; i++) { const n = Names.generate(rng); seen[n.name + '|' + n.symbol] = 1; sample.push(n); }
+  assert.ok(Object.keys(seen).length > 400, 'distinct name/ticker pairs: ' + Object.keys(seen).length);
+  sample.forEach(function (n) {
+    assert.ok(n.symbol.length >= 2 && n.symbol.length <= 10 && n.name.length >= 2 && n.name.length <= 28, 'sizes ' + n.symbol + ' / ' + n.name);
+    assert.ok(/^[#A-Za-z0-9]+$/.test(n.symbol) && /^@[a-z0-9]+$/.test(n.handle), 'characters ' + n.symbol + ' ' + n.handle);
+    assert.ok(['cat', 'photo', 'avatar', 'mixed'].indexOf(n.image) >= 0);
+  });
+  const lower = sample.filter(function (n) { return n.symbol === n.symbol.toLowerCase() && /[a-z]/.test(n.symbol); }).length / sample.length;
+  const upper = sample.filter(function (n) { return n.symbol === n.symbol.toUpperCase() && /[A-Z]/.test(n.symbol); }).length / sample.length;
+  assert.ok(lower > 0.15 && lower < 0.5 && upper > 0.3, 'casing mix: lower ' + lower.toFixed(2) + ' upper ' + upper.toFixed(2));
+  // nothing that points at a real person, company or coin may ever be added to the word banks
+  const blocked = ['trump', 'elon', 'musk', 'bernie', 'sanders', 'obama', 'biden', 'putin', 'kanye', 'swift', 'beyonce', 'messi', 'ronaldo', 'openai', 'chatgpt', 'google', 'apple', 'tesla', 'microsoft', 'amazon', 'nike', 'disney', 'bitcoin', 'ethereum', 'solana', 'pepe', 'doge', 'shib', 'bonk', 'wif', 'binance', 'coinbase', 'usdc', 'tether'];   // (not 'pump': pumpkin is just a cat name)
+  Object.keys(Names.BANKS).forEach(function (k) { Names.BANKS[k].forEach(function (w) { blocked.forEach(function (b) { assert.ok(w.toLowerCase().indexOf(b) < 0, 'the word "' + w + '" in bank ' + k + ' contains "' + b + '"'); }); }); });
+});
+
+test('launch pictures fit the name and come only from the pool; without a pool the icon is empty', function () {
+  const images = { cat: ['/img/tk/cat-001.jpg', '/img/tk/cat-002.jpg'], photo: ['/img/tk/photo-001.jpg'], avatar: ['/img/tk/av-001.svg', '/img/tk/av-002.svg'] };
+  const m = mk(15, 0, { images: images }), all = [].concat(images.cat, images.photo, images.avatar), counts = { cat: 0, other: 0 };
+  for (let i = 0; i < 400; i++) { const mint = m.lp.spawn(NOW + i * 1000); const icon = m.world.get(mint).icon; assert.ok(all.indexOf(icon) >= 0, 'icon from the pool: ' + icon); if (icon.indexOf('cat-') >= 0) counts.cat++; else counts.other++; }
+  assert.ok(counts.cat > 400 * 0.08 && counts.cat < 400 * 0.22, 'cat photos go to cat names: ' + counts.cat + ' of 400');
+  const bare = mk(16, 0); assert.strictEqual(bare.world.get(bare.lp.spawn(NOW)).icon, null);
 });
 
 test('launches arrive fast by default (about one every couple of seconds) so New Pairs keeps changing', function () {

@@ -268,3 +268,6 @@ td.r, th.r { text-align: right; }
 .pstatbar b { font-variant-numeric: tabular-nums; font-size: 15px; color: var(--text); } .pstatbar b.up { color: #4ade80; }
 .pulsebar h2 .livedot { margin-left: 8px; }
 @media (prefers-reduced-motion: reduce) { .pcard::after, .pcard.fx-up, .pcard.fx-down, .tag.pb.new, .tag.pb.mig { animation: none; } }
+
+.paddr { margin-top: 4px; font-size: 9px; text-align: center; color: var(--muted); letter-spacing: .02em; white-space: nowrap; font-family: var(--mono); }
+.pav .face img { image-rendering: auto; }

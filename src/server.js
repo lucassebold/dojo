@@ -17,7 +17,7 @@ const TRADE_PRICE_MAX_AGE_MS = 0, VIEW_PRICE_MAX_AGE_MS = 0;   // kept for marke
 
 function heldMints() { const s = {}; store.each(function (k, a) { Object.keys(a.positions).forEach(function (m) { s[m] = 1; }); }); return s; }
 
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.ico': 'image/x-icon' };
 
 function send(res, code, obj) {
   res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -186,7 +186,7 @@ function serveStatic(req, res, url) {
   if (file.indexOf(PUBLIC) !== 0) { res.writeHead(403); return res.end(); }
   fs.readFile(file, function (err, buf) {
     if (err) { res.writeHead(404, { 'content-type': 'text/plain' }); return res.end('Not found'); }
-    res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream', 'cache-control': /vendor/.test(rel) ? 'public, max-age=86400' : 'no-cache' });
+    res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream', 'cache-control': /vendor|^\/img\//.test(rel) ? 'public, max-age=86400' : 'no-cache' });
     res.end(buf);
   });
 }
