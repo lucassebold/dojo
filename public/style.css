@@ -271,3 +271,6 @@ td.r, th.r { text-align: right; }
 
 .paddr { margin-top: 4px; font-size: 9px; text-align: center; color: var(--muted); letter-spacing: .02em; white-space: nowrap; font-family: var(--mono); }
 .pav .face img { image-rendering: auto; }
+
+.emo { font-weight: 800; color: #fff; letter-spacing: -.02em; text-shadow: 0 1px 2px #0006; }
+.pav .emo { font-size: 19px; } .thead .name .emo { font-size: 12px; }

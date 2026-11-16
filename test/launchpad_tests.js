@@ -167,6 +167,39 @@ test('launch pictures fit the name and come only from the pool; without a pool t
   const bare = mk(16, 0); assert.strictEqual(bare.world.get(bare.lp.spawn(NOW)).icon, null);
 });
 
+test('token avatars never use an emoji: a missing or broken picture shows the ticker initials', function () {
+  const fs = require('fs'), path = require('path'), src = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  assert.ok(src.indexOf('FACES') < 0 && src.indexOf('emoFace') < 0, 'the emoji face helpers are gone');
+  const from = src.indexOf('function initFace'), to = src.indexOf('function pulseCard'), block = src.slice(from, to);
+  assert.ok(from > 0 && to > from && !/[\u2600-\u27BF\u{1F300}-\u{1FAFF}]/u.test(block), 'no emoji in the avatar code');
+  assert.ok(/addEventListener\('error'/.test(block), 'a picture that fails to load is replaced');
+});
+
+test('the Pulse page code runs: a card is built, avatars never use emoji, numbers roll (no browser needed)', function () {
+  const fs = require('fs'), path = require('path'), vm = require('vm');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  const esc = /function esc\(s\) \{[^\n]*\}/.exec(src)[0];
+  const block = src.slice(src.indexOf('// ---------- pulse ----------'), src.indexOf('// ---------- new pairs ----------'));
+  const listeners = [], rolled = [];
+  const box = { window: { matchMedia: function () { return { matches: false }; } }, document: { addEventListener: function (t, f) { listeners.push(t); }, hidden: false },
+    performance: { now: function () { return 0; } }, requestAnimationFrame: function (f) { rolled.push(f); }, compact: function (n) { return '$' + Math.round(n); }, icon: function () { return ''; }, scramble: function () {}, Math: Math, Number: Number, String: String, Date: Date };
+  vm.createContext(box);
+  vm.runInContext(esc + '\n' + block + '\nthis.api = { pulseCard, initFace, tokFace, rollNum, nbFmt, ageShort, hashStr };', box);
+  const A = box.api, card = { mint: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAApump', symbol: 'poorcat', name: 'poorcat', icon: '/img/tk/cat-003.jpg', createdAt: Date.now() - 5000, handle: '@poorcat', x: true, tg: false, web: true };
+  const html = A.pulseCard(card);
+  assert.ok(html.indexOf('poorcat') > 0 && html.indexOf('/img/tk/cat-003.jpg') > 0 && html.indexOf('AAAA...pump') > 0, 'a card has the ticker, its picture and the short address');
+  const bare = A.pulseCard(Object.assign({}, card, { icon: null }));
+  assert.ok(bare.indexOf('class="emo"') > 0 && bare.indexOf('>PO<') > 0, 'no picture: the ticker initials');
+  assert.ok(!/[\u2600-\u27BF\u{1F300}-\u{1FAFF}]/u.test(A.tokFace({ icon: null, symbol: 'x', mint: 'm' }) + A.tokFace({ icon: '/img/tk/av-001.svg', symbol: 'x', mint: 'm' })), 'no emoji in any token avatar');
+  assert.ok(A.tokFace({ icon: 'http://evil.example/x.png', symbol: 'ab', mint: 'm' }).indexOf('evil.example') < 0, 'only https and local pictures are used');
+  assert.ok(listeners.indexOf('error') >= 0, 'a broken picture is replaced');
+  const el = { _a: {}, textContent: '', getAttribute: function (k) { return k in this._a ? this._a[k] : null; }, setAttribute: function (k, v) { this._a[k] = String(v); }, removeAttribute: function (k) { delete this._a[k]; }, isConnected: true };
+  assert.strictEqual(A.rollNum(el, 100, box.compact), 0, 'the first value just appears'); assert.strictEqual(el.textContent, '$100');
+  assert.strictEqual(A.rollNum(el, 100, box.compact), 0, 'same value: nothing');
+  assert.strictEqual(A.rollNum(el, 150, box.compact), 1, 'up'); assert.strictEqual(A.rollNum(el, 90, box.compact), -1, 'down');
+  assert.strictEqual(A.nbFmt(-5), '-$5'); assert.strictEqual(A.nbFmt(7), '+$7');
+});
+
 test('launches arrive fast by default (about one every couple of seconds) so New Pairs keeps changing', function () {
   const world = World.create({ rng: World.mulberry32(11) }), lp = Launchpad.create({ world: world, rng: World.mulberry32(12) });
   let t = NOW; for (let i = 0; i < 300; i++) { t += 1000; lp.tick(t); world.step(t); }

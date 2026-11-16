@@ -10,8 +10,14 @@ const Launchpad = require('./launchpad');
 
 const world = World.create({});
 let pinned = function () { return {}; };     // mints somebody holds: never removed from the market
-const lp = Launchpad.create({ images: loadImages(), world: world, rate: process.env.LAUNCH_RATE !== undefined ? Number(process.env.LAUNCH_RATE) : undefined, pinned: function () { return pinned(); } });
+const IMAGES = loadImages();
+const lp = Launchpad.create({ images: IMAGES, world: world, rate: process.env.LAUNCH_RATE !== undefined ? Number(process.env.LAUNCH_RATE) : undefined, pinned: function () { return pinned(); } });
 // the pictures of the made-up launches (public/img/tk, see tools/fetch_token_images.py), grouped by kind
+// Every token that enters the market gets a picture: a real token without one (or an old saved launch) gets a stable cartoon avatar
+function admit(seed, now) {
+  if (!seed.icon) { const pool = IMAGES.avatar; if (pool.length) { let h = 2166136261; for (let i = 0; i < seed.mint.length; i++) { h ^= seed.mint.charCodeAt(i); h = Math.imul(h, 16777619); } seed.icon = pool[(h >>> 0) % pool.length]; } }
+  return world.add(seed, now);
+}
 function loadImages() {
   const out = { cat: [], photo: [], avatar: [] };
   try {
@@ -43,7 +49,7 @@ exports.prices = async function (mints) {
   mints.forEach(function (m) { if (world.has(m)) world.touch(m, now); else if (feed.isMint(m)) missing.push(m); });
   if (missing.length) {
     const real = await feed.snapshots(missing);       // a real token we have not seen yet: add it with its real numbers
-    Object.keys(real).forEach(function (k) { world.add(real[k], Date.now()); });
+    Object.keys(real).forEach(function (k) { admit(real[k], Date.now()); });
   }
   mints.forEach(function (m) { const s = world.snapshot(m); if (s) out[m] = s; });
   return out;
@@ -51,7 +57,7 @@ exports.prices = async function (mints) {
 
 exports.search = async function (q) {
   const found = await feed.search(q);
-  found.forEach(function (real) { world.add(real, Date.now()); });
+  found.forEach(function (real) { admit(real, Date.now()); });
   return found.map(function (r) { return world.snapshot(r.mint); }).filter(Boolean).sort(function (a, b) { return b.liquidity - a.liquidity; });
 };
 
@@ -99,7 +105,7 @@ async function discoverNow() {
     const fresh = (await feed.discover()).filter(function (m) { return !world.has(m); }).slice(0, 90);
     if (fresh.length) {
       const real = await feed.snapshots(fresh);
-      Object.keys(real).forEach(function (k) { if (real[k].liquidity >= MIN_LIQUIDITY) world.add(real[k], Date.now()); });
+      Object.keys(real).forEach(function (k) { if (real[k].liquidity >= MIN_LIQUIDITY) admit(real[k], Date.now()); });
       evict();
     }
   } catch (e) { /* try again in 3 minutes */ }
@@ -120,7 +126,7 @@ function saveCache() {
 function loadCache() {
   try {
     const j = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8')), rows = Array.isArray(j) ? j : j.tokens || [];
-    rows.forEach(function (s) { if (s && feed.isMint(s.mint)) world.add(s, Date.now()); });
+    rows.forEach(function (s) { if (s && feed.isMint(s.mint)) admit(s, Date.now()); });
     lp.restore(j.launches);
   } catch (e) { /* no cache yet */ }
 }

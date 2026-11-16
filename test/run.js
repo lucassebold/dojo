@@ -118,6 +118,8 @@ test('market: an unknown real token is fetched once, then served from the simula
   const r = await market.prices([M]);
   assert.ok(r[M] && r[M].price > 0 && r[M].sim === true);
   near(r[M].price, 0.01, 0.0005);                       // starts at the real price
+  assert.ok(/^\/img\/tk\/av-/.test(r[M].icon), 'a real token with no picture gets a stable avatar, never an emoji: ' + r[M].icon);
+  assert.strictEqual((await market.prices([M]))[M].icon, r[M].icon, 'and keeps the same one');
   assert.strictEqual(dexCalls, 1);
   for (let i = 0; i < 20; i++) await market.prices([M]);
   assert.strictEqual(dexCalls, 1, 'known tokens never touch the network');

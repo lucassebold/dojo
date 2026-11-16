@@ -55,7 +55,7 @@ minúsculas, conceito em maiúsculas, ticker com expansão tipo `TLB Tiny Lazy B
 A imagem combina com o nome: foto de gato para nomes de gato, foto para conceitos e objetos, avatar de desenho para gírias e
 pets. As ~225 imagens (760 KB) vêm de fontes de licença livre (The Cat API, Lorem Picsum/Unsplash e DiceBear CC0; ver
 `public/img/tk/CREDITS.md`) e ficam no repositório, então o site não depende de serviço externo; para refazer o conjunto:
-`python tools/fetch_token_images.py` (precisa de Pillow). Sem as imagens a tela desenha um placeholder.
+`python tools/fetch_token_images.py` (precisa de Pillow). Todo token que entra no mercado sem imagem (token real sem ícone, lançamento antigo restaurado do disco) recebe um avatar de desenho fixo (`admit()` em `src/market.js`), e a tela **nunca** desenha emoji: se a imagem faltar ou falhar ao carregar, mostra as iniciais do ticker.
 
 Na coluna Migrated os graduados simulados
 dividem espaço com os tokens reais do mercado (pelo menos 10 vagas para eles). Ao ligar o servidor, os últimos 30 minutos de
