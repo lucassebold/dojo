@@ -110,6 +110,8 @@ async function api(req, res, url) {
 
   if (p === '/api/trending' && m === 'GET') return send(res, 200, { tokens: await market.trending() });
 
+  if (p === '/api/pulse' && m === 'GET') return send(res, 200, await market.pulse());
+
   if (p === '/api/new' && m === 'GET') return send(res, 200, { tokens: await market.newPairs() });
 
   if (p === '/api/search' && m === 'GET') {

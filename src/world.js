@@ -72,7 +72,7 @@ exports.create = function (opts) {
     if (t.real.marketCap > 0) t.supply = t.real.marketCap / price; else if (!t.supply) t.supply = 1e9;
     t.ageH = t.createdAt ? (nowMs - t.createdAt) / 3600000 : 999;
     const liq = t.real.liquidity;
-    t.sigmaMin = minuteVol(t.real, t.ageH);
+    t.sigmaMin = minuteVol(t.real, t.ageH) * (t.sigmaScale || 1);
     t.sx = Math.min(0.25, 8 * t.sigmaMin) / Math.sqrt(WANDER_TAU / 2);
     t.jumpRate = (1 / 1500) * (1 + (t.ageH < 6 ? 1 : 0) + (liq < 20000 ? 1 : 0));
     t.downBias = liq < 20000 ? 0.58 : 0.5;
@@ -128,10 +128,12 @@ exports.create = function (opts) {
     if (old) { applyReal(old, seed, nowMs); return old; }
     const t = {
       mint: seed.mint, symbol: seed.symbol, name: seed.name, icon: seed.icon || null, pair: seed.pair, dex: seed.dex || '', createdAt: seed.createdAt || 0,
-      x: 0, lf: 1, regime: 1, drift: 0, retraceLeft: 0, frenzyDir: 1, lastBuys: 0, lastSells: 0, addedAt: nowMs, viewedAt: nowMs, snap: null
+      x: 0, lf: 1, regime: 1, drift: 0, retraceLeft: 0, frenzyDir: 1, lastBuys: 0, lastSells: 0, addedAt: nowMs, viewedAt: nowMs, snap: null,
+      meta: seed.meta || null, pull: seed.pull || 0, sigmaScale: seed.sigmaScale || 1, cumBuy: 0, cumSell: 0
     };
     if (!applyReal(t, seed, nowMs)) return null;
     backfill(t, nowMs);
+    if (seed.launch) t.candles = t.candles.slice(-1);      // a launch has no past: its chart starts now
     t.athP = t.candles.reduce(function (m, c) { return c.high > m ? c.high : m; }, 0);
     seedTicks(t, nowMs);
     tokens[t.mint] = t; byPair[t.pair] = t.mint;
@@ -140,6 +142,15 @@ exports.create = function (opts) {
     return t;
   };
   w.setReal = function (mint, real, nowMs) { const t = tokens[mint]; return t ? applyReal(t, real, nowMs || Date.now()) : false; };
+  // The launchpad moves the "real" anchor of a simulated launch every second (price, liquidity, activity, venue).
+  w.nudge = function (mint, p) {
+    const t = tokens[mint]; if (!t) return false;
+    if (p.price > 0) t.real.price = p.price;
+    if (p.liquidity > 0) t.real.liquidity = p.liquidity;
+    if (p.vps >= 0) t.vps = p.vps;
+    if (p.dex) t.dex = p.dex;
+    return true;
+  };
   w.has = function (mint) { return !!tokens[mint]; };
   w.get = function (mint) { return tokens[mint] || null; };
   w.mintOfPair = function (pair) { return byPair[pair] || null; };
@@ -212,7 +223,7 @@ exports.create = function (opts) {
     if (t.regime !== 2 && t.retraceLeft > 0 && --t.retraceLeft === 0) t.drift = 0;
 
     const lnReal = Math.log(real.price);
-    let d = ANCHOR_PULL * (lnReal + t.x - t.lnP) + t.drift + sig * REGIME_VOL[t.regime] * gauss(rng);
+    let d = (t.pull || ANCHOR_PULL) * (lnReal + t.x - t.lnP) + t.drift + sig * REGIME_VOL[t.regime] * gauss(rng);
     if (rng() < t.jumpRate) d += (rng() < t.downBias ? -1 : 1) * Math.min(12, 1.5 * Math.pow(1 - rng(), -1 / 2.2)) * t.sigmaMin;
     t.lnP = clamp(t.lnP + d, lnReal - 3, lnReal + 3);
     t.x += -t.x / WANDER_TAU + t.sx * gauss(rng);
@@ -226,6 +237,7 @@ exports.create = function (opts) {
     const liq = real.liquidity * Math.sqrt(price / real.price) * t.lf;
     const trades = poisson(rng, v / clamp(liq * 0.003, 15, 400)), share = 0.5 + 0.15 * clamp(d / (2 * sig), -1, 1);
     const b = Math.round(trades * share);
+    t.cumBuy += v * share; t.cumSell += v * (1 - share);
     t.simBuys += b; t.simSells += trades - b;
     if (price > t.athP) t.athP = price;
     pushTick(t, Math.floor(ms / 1000), price, v, b, trades - b);
@@ -248,7 +260,7 @@ exports.create = function (opts) {
       change: { m5: chg(5), h1: chg(60), h6: chg(360), h24: chg(1440) },
       volume: { m5: flow.vol, h1: sumV(60), h6: sumV(360), h24: sumV(1440) },   // 5m comes from the exact last 300 s of ticks
       buys24: t.lastBuys, sells24: t.lastSells, createdAt: t.createdAt, icon: t.icon, t: nowMs, sim: true,
-      supply: t.supply, ath: Math.max(t.athP, price) * t.supply, flow5m: flow
+      supply: t.supply, ath: Math.max(t.athP, price) * t.supply, flow5m: flow, netBuy: t.cumBuy - t.cumSell, meta: t.meta
     };
   }
 

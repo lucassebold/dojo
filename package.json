@@ -6,6 +6,6 @@
   "private": true,
   "scripts": {
     "start": "node src/server.js",
-    "test": "node test/run.js && node test/world_tests.js"
+    "test": "node test/run.js && node test/world_tests.js && node test/launchpad_tests.js"
   }
 }

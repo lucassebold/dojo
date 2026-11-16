@@ -33,6 +33,22 @@ vermelha conforme seu PnL; linha pontilhada no preço atual; zoom rápido (5m a 
 − comprado, naquele token) e abas Trades / Positions / Info. Preços minúsculos aparecem como `$0.0₅16` (o número pequeno conta
 os zeros). As velas são atualizadas a cada 2 s direto da simulação.
 
+## Pulse (lançamentos simulados)
+Tela com três colunas ao vivo, no estilo de um terminal de lançamentos: **New Pairs** (acabou de nascer), **Final Stretch**
+(perto de migrar) e **Migrated**. Cada cartão mostra avatar com anel de progresso, idade, redes, estatísticas de carteiras
+(T10, DEV, SNP, INS, BND), V (volume), MC, NB (compras líquidas) e um botão ⚡ de compra rápida com o valor configurável.
+Os cartões novos entram com animação e só o que mudou é atualizado (a cada 2 s); o market cap pisca na direção em que andou.
+
+Os lançamentos (`src/launchpad.js`) são **inventados**: nome, endereço (`...pump`), dev e estatísticas. O destino de cada um é
+sorteado no nascimento: **dud** 55% (some), **meh** 25%, **runner** 12% (chega perto) e **graduate** 8% (passa de
+US$ 25 mil de market cap e migra: a coluna muda, a corretora vira `pumpswap`, e depois ele sobe ou cai). O roteiro só move
+a âncora do preço; o resto (ruído, euforia, saltos, volume, velas, gráfico de 1s) é o mesmo simulador dos outros tokens, então
+um lançamento se opera e se vê como qualquer moeda, com o impacto de preço de um poço pequeno. Holders, top 10, dev, snipers
+etc. evoluem com o tempo (holders crescem, top 10 e snipers caem, dev pode vender). Na coluna Migrated os graduados simulados
+dividem espaço com os tokens reais do mercado (pelo menos 10 vagas para eles). Ao ligar o servidor, os últimos 30 minutos de
+lançamentos são simulados de uma vez (`WARMUP_MIN`), para as colunas já nascerem cheias; `LAUNCH_RATE` (padrão 0,1 por segundo)
+controla quantos nascem. Quem tem posição num lançamento nunca o perde: ele é salvo em `DATA_DIR/universe.json`.
+
 ## Como funciona o resto
 - **Jogador**: um id aleatório guardado no navegador (`localStorage`). Dinheiro fictício, então não há login.
 - **Execução simulada** (`src/sim.js`): pool de produto constante, R = liquidez/2. Comprar x dólares paga preço médio
@@ -44,7 +60,8 @@ os zeros). As velas são atualizadas a cada 2 s direto da simulação.
 - **Persistência**: um arquivo JSON (`DATA_DIR/accounts.json`). Serve para poucos usuários; o próximo passo é um banco.
 
 ## Variáveis de ambiente
-`PORT`, `HOST`, `DATA_DIR` (disco persistente em produção), `START_CASH` (10000), `FEE_PCT` (0.5).
+`PORT`, `HOST`, `DATA_DIR` (disco persistente em produção), `START_CASH` (10000), `FEE_PCT` (0.5), `LAUNCH_RATE` (0.1),
+`WARMUP_MIN` (30).
 
 ## Limites conhecidos
 - O mercado é compartilhado e em memória: com 2 instâncias do servidor cada uma teria preços diferentes. Use 1 instância.
@@ -55,4 +72,6 @@ os zeros). As velas são atualizadas a cada 2 s direto da simulação.
 - `node test/run.js`: testes de contas, execução, mercado simulado e API, com o DexScreener simulado (sem rede).
 - `node test/world_tests.js`: propriedades estatísticas do simulador (histórico passa pelos pontos reais, volatilidade
   proporcional à liquidez, caudas pesadas, preço limitado em torno do real, volume acompanha os movimentos), com semente fixa.
+- `node test/launchpad_tests.js`: ciclo de vida dos lançamentos (endereço válido, destinos sorteados, migração, colunas sem
+  repetição, estatísticas que evoluem, limpeza sem apagar quem tem posição, operar um lançamento).
 - `test/scenarios_live.js`: 22 cenários de usuário contra servidor real (ver cabeçalho do arquivo). Rodar com pasta de dados limpa.

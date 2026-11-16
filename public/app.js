@@ -69,12 +69,13 @@ function clearPage() {
 function route() {
   clearPage();
   const h = location.hash.replace(/^#/, '') || '/';
-  const nav = h === '/' || h.indexOf('/token/') === 0 ? 'home' : h === '/new' ? 'new' : h === '/portfolio' ? 'portfolio' : h === '/leaderboard' ? 'board' : '';
+  const nav = h === '/' || h.indexOf('/token/') === 0 ? 'home' : h === '/new' ? 'new' : h === '/pulse' ? 'pulse' : h === '/portfolio' ? 'portfolio' : h === '/leaderboard' ? 'board' : '';
   document.querySelectorAll('[data-nav]').forEach(function (a) { a.classList.toggle('on', a.getAttribute('data-nav') === nav); });
   window.scrollTo(0, 0);
   const m = /^\/token\/([1-9A-HJ-NP-Za-km-z]{32,44})$/.exec(h);
   if (m) return tokenPage(m[1]);
   if (h === '/new') return newPairsPage();
+  if (h === '/pulse') return pulsePage();
   if (h === '/portfolio') return portfolioPage();
   if (h === '/leaderboard') return leaderboardPage();
   return homePage();
@@ -229,6 +230,99 @@ function homePage() {
   load(); every(TREND_REFRESH_MS, load);
 }
 
+// ---------- pulse ----------
+// Three live columns like a launchpad terminal: New Pairs (just launched), Final Stretch (close to migrating) and Migrated.
+// The launches are simulated (made-up tokens, simulated prices); the Migrated column also lists the real tokens of the market.
+const PULSE_COLS = [['newPairs', 'New Pairs'], ['finalStretch', 'Final Stretch'], ['migrated', 'Migrated']];
+const FACES = ['\u{1F438}', '\u{1F436}', '\u{1F431}', '\u{1F680}', '\u{1F319}', '\u{1F451}', '\u{1F525}', '\u{1F48E}', '\u{1F98D}', '\u{1F43B}', '\u{1F402}', '\u{1F986}', '\u{1F41F}', '\u{1F40B}', '\u{1F95A}', '\u{1F3A9}', '\u{1F9D9}', '\u{1F916}', '\u{1F47E}', '\u{1F34C}'];
+function hashStr(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+function ageShort(t) { const s = Math.max(0, (Date.now() - t) / 1000); return s < 60 ? Math.floor(s) + 's' : s < 3600 ? Math.floor(s / 60) + 'm' : s < 86400 ? Math.floor(s / 3600) + 'h' : Math.floor(s / 86400) + 'd'; }
+function pctShort(n) { return (Number(n) || 0).toFixed(n >= 10 ? 0 : 1) + '%'; }
+
+// Made-up tokens have no image: a gradient square with an emoji, the same one on the Pulse card and in the token header
+function emoFace(mint) { const h = hashStr(mint), hue = h % 360; return '<span class="emo" style="background:linear-gradient(135deg,hsl(' + hue + ' 70% 45%),hsl(' + ((hue + 50) % 360) + ' 70% 30%))">' + FACES[h % FACES.length] + '</span>'; }
+function tokFace(s) { return s.icon && /^https:\/\//.test(s.icon) ? icon(s.icon) : emoFace(s.mint); }
+
+function pulseCard(c) {
+  const face = c.icon && /^https:\/\//.test(c.icon) ? '<img src="' + esc(c.icon) + '" alt="" loading="lazy" referrerpolicy="no-referrer">' : emoFace(c.mint);
+  const pill = function (key, label, tip, bad) { return '<i class="pill" data-k="' + key + '" title="' + tip + '"><em>' + label + '</em> <b></b></i>'; };
+  return '<div class="pcard" data-mint="' + esc(c.mint) + '" data-t="' + esc(c.createdAt) + '"><a class="pmain" href="#/token/' + esc(c.mint) + '">' +
+    '<div class="pav"><div class="ring"><div class="face">' + face + '</div></div><span class="hb" data-f="holders"></span></div>' +
+    '<div class="pbody"><div class="pn"><b>' + esc(c.symbol) + '</b> <span class="muted pname">' + esc(c.name) + '</span>' + (c.fake ? ' <span class="tag simt" title="Made-up token, simulated price">SIM</span>' : '') + '</div>' +
+    '<div class="pm"><span class="age" data-f="age"></span>' + (c.x ? '<span class="soc" title="X / Twitter">\u{1D54F}</span>' : '') + (c.tg ? '<span class="soc" title="Telegram">✈</span>' : '') + (c.web ? '<span class="soc" title="Website">\u{1F310}</span>' : '') + '<span class="dexp" data-f="dexp"></span><span class="muted">' + esc(c.handle) + '</span></div>' +
+    '<div class="pstats">' + pill('top10', 'T10', 'Top 10 holders') + pill('dev', 'DEV', 'Dev holding') + pill('snipers', 'SNP', 'Snipers') + pill('insiders', 'INS', 'Insiders') + pill('bundlers', 'BND', 'Bundlers') + '</div></div></a>' +
+    '<div class="pbox"><div class="pvm"><span>V <b data-f="vol"></b></span><span>MC <b class="pmc" data-f="mc"></b></span></div><div class="pnb">NB <b data-f="nb"></b></div><button class="qbuy" data-mint="' + esc(c.mint) + '" title="Quick buy">⚡ <span class="qbamt"></span></button></div></div>';
+}
+// Updates only what changed in an existing card, and pops the market cap in the direction it moved
+function pulseUpdate(el, c) {
+  const set = function (f, txt) { const n = el.querySelector('[data-f="' + f + '"]'); if (n && n.textContent !== txt) { n.textContent = txt; return true; } return false; };
+  const mcEl = el.querySelector('[data-f="mc"]'), before = mcEl.getAttribute('data-v');
+  if (set('mc', compact(c.marketCap)) && before) {
+    const cls2 = c.marketCap > Number(before) ? 'bump-up' : 'bump-down';
+    mcEl.classList.remove('bump-up', 'bump-down'); void mcEl.offsetWidth; mcEl.classList.add(cls2);
+  }
+  mcEl.setAttribute('data-v', c.marketCap);
+  set('age', ageShort(c.createdAt)); set('vol', compact(c.volume)); set('holders', c.holders > 999 ? Math.round(c.holders / 100) / 10 + 'K' : String(c.holders));
+  const nb = el.querySelector('[data-f="nb"]'); const nbt = (c.netBuy >= 0 ? '+' : '-') + compact(Math.abs(c.netBuy)); if (nb.textContent !== nbt) nb.textContent = nbt; nb.className = c.netBuy >= 0 ? 'up' : 'down';
+  set('dexp', c.migrated && c.dexPaid ? 'DEX' : '');
+  const ring = el.querySelector('.ring'); ring.style.setProperty('--p', Math.round(c.progress * 100));
+  el.classList.toggle('mig', !!c.migrated);
+  const lim = { top10: [40, 25], dev: [8, 3], snipers: [12, 5], insiders: [8, 3], bundlers: [12, 5] };
+  Array.prototype.forEach.call(el.querySelectorAll('.pill'), function (p) {
+    const k = p.getAttribute('data-k'), v = Number(c[k]) || 0, b = p.querySelector('b'), t = pctShort(v);
+    if (b.textContent !== t) b.textContent = t;
+    p.className = 'pill ' + (v >= lim[k][0] ? 'bad' : v >= lim[k][1] ? 'mid' : 'ok');
+  });
+}
+
+function pulsePage() {
+  let amt = 50;
+  try { amt = Number(localStorage.getItem('dojo_quickbuy')) || 50; } catch (e) { /* storage blocked */ }
+  view.innerHTML = '<div class="pulse"><div class="pulsebar"><div><h2>Pulse</h2><span class="muted">Live launches &middot; made-up tokens with simulated prices. Migrated also lists real tokens.</span></div>' +
+    '<div class="pulsetools"><input id="pfilter" placeholder="Search ticker or name" aria-label="Filter by ticker or name" autocomplete="off"><label class="qb">Quick buy $<input id="qbAmt" inputmode="decimal" value="' + esc(amt) + '" aria-label="Quick buy amount in dollars"></label></div></div>' +
+    '<div class="pcols">' + PULSE_COLS.map(function (c) { return '<section class="pcol" data-col="' + c[0] + '"><header><b>' + c[1] + '</b><span class="cnt"></span></header><div class="plist"><div class="empty">Waiting for launches...</div></div></section>'; }).join('') + '</div></div>';
+  let data = null;
+  const amountNow = function () { const v = parseFloat(String($('#qbAmt').value).replace(',', '.')); return isFinite(v) && v > 0 ? v : 50; };
+  const paintAmt = function () { Array.prototype.forEach.call(document.querySelectorAll('.qbamt'), function (n) { n.textContent = '$' + amountNow(); }); };
+  $('#qbAmt').addEventListener('input', function () { try { localStorage.setItem('dojo_quickbuy', String(amountNow())); } catch (e) { /* storage blocked */ } paintAmt(); });
+  $('#pfilter').addEventListener('input', function () { render(); });
+
+  function render() {
+    if (!data) return;
+    const q = $('#pfilter').value.trim().toLowerCase();
+    PULSE_COLS.forEach(function (col) {
+      const sec = document.querySelector('.pcol[data-col="' + col[0] + '"]'), list = sec.querySelector('.plist');
+      const want = (data[col[0]] || []).filter(function (c) { return !q || c.symbol.toLowerCase().indexOf(q) >= 0 || c.name.toLowerCase().indexOf(q) >= 0; });
+      sec.querySelector('.cnt').textContent = want.length;
+      const empty = list.querySelector('.empty'); if (empty) empty.remove();
+      const have = {}; Array.prototype.slice.call(list.children).forEach(function (el) { have[el.getAttribute('data-mint')] = el; });
+      const keep = {}; want.forEach(function (c) { keep[c.mint] = 1; });
+      Object.keys(have).forEach(function (m) { if (!keep[m]) have[m].remove(); });
+      want.forEach(function (c, i) {
+        let el = have[c.mint];
+        if (!el) { const tmp = document.createElement('div'); tmp.innerHTML = pulseCard(c); el = tmp.firstChild; el.classList.add('enter'); pulseUpdate(el, c); }
+        else pulseUpdate(el, c);
+        if (list.children[i] !== el) list.insertBefore(el, list.children[i] || null);
+      });
+      if (!want.length) list.innerHTML = '<div class="empty">' + (q ? 'No match.' : 'Nothing here yet.') + '</div>';
+    });
+    paintAmt();
+  }
+  const load = function () {
+    if (pressing) return;
+    api('/api/pulse').then(function (j) { data = j; render(); }).catch(function (e) { if (!data) { const l = document.querySelector('.pcol .plist'); if (l) l.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; } });
+  };
+  document.querySelector('.pcols').addEventListener('click', function (e) {
+    const b = e.target.closest('.qbuy'); if (!b || b.disabled) return;
+    b.disabled = true;
+    api('/api/trade', { method: 'POST', body: { mint: b.getAttribute('data-mint'), side: 'buy', usd: amountNow() } }).then(function (j) {
+      setMe(j.me); toast('Bought ' + qty(j.trade.qty) + ' ' + j.trade.symbol + ' for ' + money(j.trade.usd));
+    }).catch(function (err) { toast(err.message, true); }).then(function () { b.disabled = false; });
+  });
+  every(1000, function () { Array.prototype.forEach.call(document.querySelectorAll('.pcard'), function (el) { const a = el.querySelector('[data-f="age"]'), t = ageShort(Number(el.getAttribute('data-t'))); if (a && a.textContent !== t) a.textContent = t; }); });
+  load(); every(2000, load);
+}
+
 // ---------- new pairs ----------
 function newPairsPage() {
   let amt = 100;
@@ -289,7 +383,7 @@ function tokenPage(mint) {
   try { mode = localStorage.getItem('dojo_chart_mode') === 'price' ? 'price' : 'mc'; } catch (e) { /* storage blocked */ }
 
   CHART_TFS.forEach(function (r) {
-    const b = document.createElement('button'); b.textContent = r === 'D' ? '1D' : r; b.className = r === res ? 'on' : '';
+    const b = document.createElement('button'); b.textContent = r === 'D' ? '1D' : r; b.className = r === res ? 'on' : ''; b.setAttribute('data-r', r);
     b.addEventListener('click', function () {
       res = r; Array.prototype.forEach.call($('#tfs').children, function (x) { x.classList.toggle('on', x === b); });
       rawBars = []; byTime = {}; if (series) { series.setData([]); vol.setData([]); series.setMarkers([]); }
@@ -328,12 +422,16 @@ function tokenPage(mint) {
   function position() { return ME && ME.positions.filter(function (p) { return p.mint === mint; })[0] || null; }
   const unit = function () { return mode === 'mc' ? mult : 1; };
   const conv = function (b) { const m = unit(); return { time: b.time + TZ, open: b.open * m, high: b.high * m, low: b.low * m, close: b.close * m }; };
-  const fmtVal = function (v) { return mode === 'mc' ? compact(v).slice(1) : price(v).slice(1); };   // no $ on the chart, like the terminal
+  const mcLabel = function (v) {
+    v = Number(v) || 0; const a = Math.abs(v);
+    return a >= 1e9 ? (v / 1e9).toFixed(2) + 'B' : a >= 1e6 ? (v / 1e6).toFixed(2) + 'M' : a >= 1e5 ? (v / 1e3).toFixed(1) + 'K' : a >= 1e4 ? (v / 1e3).toFixed(2) + 'K' : a >= 1e3 ? (v / 1e3).toFixed(3) + 'K' : v.toFixed(a >= 100 ? 0 : 2);
+  };
+  const fmtVal = function (v) { return mode === 'mc' ? mcLabel(v) : price(v).slice(1); };   // no $ on the chart, like the terminal   // no $ on the chart, like the terminal
 
   // ---- header, side panel blocks, bottom panel ----
   function head() {
     const s = snap, sup = s.supply || (s.price > 0 ? s.marketCap / s.price : 0);
-    $('#thead').innerHTML = '<div class="name">' + icon(s.icon) + '<div><b style="font-size:16px">' + esc(s.symbol) + '</b> <span class="muted">' + esc(s.name) + '</span><br><span class="up">' + (s.createdAt ? esc(ago(s.createdAt).replace(' ago', '')) : '') + '</span> <span class="simtag" title="Simulated price, based on the real market">sim</span></div></div>' +
+    $('#thead').innerHTML = '<div class="name">' + tokFace(s) + '<div><b style="font-size:16px">' + esc(s.symbol) + '</b> <span class="muted">' + esc(s.name) + '</span><br><span class="up">' + (s.createdAt ? esc(ago(s.createdAt).replace(' ago', '')) : '') + '</span> <span class="simtag" title="Simulated price, based on the real market">sim</span></div></div>' +
       '<div class="bigmc">' + compact(s.marketCap) + '</div>' +
       '<div class="stat"><span>Price</span><b>' + price(s.price) + '</b></div>' +
       '<div class="stat"><span>Liquidity</span><b>' + compact(s.liquidity) + '</b></div>' +
@@ -544,7 +642,11 @@ function tokenPage(mint) {
     }).catch(function (e) { toast(e.message, true); onInput(); }).then(function () { busy = false; });
   }
 
-  Promise.all([refreshMe(), loadSnap(), loadTrades()]).then(function () { renderSide(false); paintBottom(); loadBars(true); }).catch(function (e) {
+  Promise.all([refreshMe(), loadSnap(), loadTrades()]).then(function () {
+    renderSide(false); paintBottom();
+    if (snap.createdAt && Date.now() - snap.createdAt < 15 * 60000 && res === '1m') { res = '1s'; Array.prototype.forEach.call($('#tfs').children, function (x) { x.classList.toggle('on', x.getAttribute('data-r') === '1s'); }); }
+    loadBars(true);
+  }).catch(function (e) {
     $('#thead').innerHTML = '<span class="down">' + esc(e.message) + '</span>';
   });
   every(2000, function () { loadSnap().catch(function () {}); });

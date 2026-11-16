@@ -6,9 +6,14 @@ const fs = require('fs');
 const path = require('path');
 const feed = require('./feed');
 const World = require('./world');
+const Launchpad = require('./launchpad');
 
 const world = World.create({});
-exports._world = world;
+let pinned = function () { return {}; };     // mints somebody holds: never removed from the market
+const lp = Launchpad.create({ world: world, rate: process.env.LAUNCH_RATE !== undefined ? Number(process.env.LAUNCH_RATE) : 0.1, pinned: function () { return pinned(); } });
+exports._world = world; exports._lp = lp;
+// one second of the market: the launchpad moves its launches, then every token takes a step
+function advance(now) { lp.tick(now); world.step(now); }
 exports.isMint = feed.isMint;
 
 const MAX_TOKENS = 160, MIN_LIQUIDITY = 1000, TREND_MAX = 60, NEW_MAX = 40, NEW_MAX_AGE_MS = 24 * 3600000;
@@ -20,7 +25,6 @@ Object.defineProperty(stats, 'tokens', { get: function () { return world.size();
 Object.defineProperty(stats, 'dexCalls', { get: function () { return feed.stats.calls; }, enumerable: true });
 exports.stats = stats;
 
-let pinned = function () { return {}; };     // mints somebody holds: never removed from the market
 exports.setPinned = function (fn) { pinned = fn; };
 
 exports.prices = async function (mints) {
@@ -41,13 +45,16 @@ exports.search = async function (q) {
 };
 
 exports.trending = async function () {
-  return world.list().filter(function (s) { return s.liquidity >= MIN_LIQUIDITY; }).sort(function (a, b) { return b.volume.h1 - a.volume.h1; }).slice(0, TREND_MAX);
+  return world.list().filter(function (s) { return !s.meta && s.liquidity >= MIN_LIQUIDITY; }).sort(function (a, b) { return b.volume.h1 - a.volume.h1; }).slice(0, TREND_MAX);
 };
 
 exports.newPairs = async function () {
   const cut = Date.now() - NEW_MAX_AGE_MS;
-  return world.list().filter(function (s) { return s.createdAt > cut && s.liquidity >= MIN_LIQUIDITY; }).sort(function (a, b) { return b.createdAt - a.createdAt; }).slice(0, NEW_MAX);
+  return world.list().filter(function (s) { return !s.meta && s.createdAt > cut && s.liquidity >= MIN_LIQUIDITY; }).sort(function (a, b) { return b.createdAt - a.createdAt; }).slice(0, NEW_MAX);
 };
+
+// Pulse: simulated launches (New Pairs, Final Stretch) and what has migrated (simulated graduates plus the real tokens)
+exports.pulse = async function () { return Launchpad.pulse(world.list()); };
 
 exports.candles = async function (pair, res, limit) {
   if (!feed.isMint(pair)) throw new Error('Invalid pair');
@@ -58,9 +65,9 @@ exports.candles = async function (pair, res, limit) {
 
 // ---- keeping the market stocked ----
 function evict() {
-  const held = pinned();
-  while (world.size() > MAX_TOKENS) {
-    const loose = world.mints().filter(function (m) { return !held[m]; }).sort(function (a, b) { return world.get(a).viewedAt - world.get(b).viewedAt; });
+  const held = pinned(), real = function () { return world.mints().filter(function (m) { return !world.get(m).meta; }); };
+  while (real().length > MAX_TOKENS) {
+    const loose = real().filter(function (m) { return !held[m]; }).sort(function (a, b) { return world.get(a).viewedAt - world.get(b).viewedAt; });
     if (!loose.length) return;
     world.remove(loose[0]);
   }
@@ -92,23 +99,35 @@ function saveCache() {
   try {
     const rows = world.mints().map(function (m) {
       const t = world.get(m);
-      return Object.assign({ mint: t.mint, symbol: t.symbol, name: t.name, icon: t.icon, pair: t.pair, dex: t.dex, createdAt: t.createdAt }, t.real);
+      return Object.assign({ mint: t.mint, symbol: t.symbol, name: t.name, icon: t.icon, pair: t.pair, dex: t.dex, createdAt: t.createdAt, meta: t.meta, pull: t.pull, sigmaScale: t.sigmaScale, launch: !!t.meta }, t.real);
     });
     fs.mkdirSync(path.dirname(CACHE_FILE), { recursive: true });
-    fs.writeFileSync(CACHE_FILE + '.tmp', JSON.stringify(rows));
+    fs.writeFileSync(CACHE_FILE + '.tmp', JSON.stringify({ tokens: rows, launches: lp.serialize() }));
     fs.renameSync(CACHE_FILE + '.tmp', CACHE_FILE);
   } catch (e) { /* the cache is only a convenience */ }
 }
 function loadCache() {
   try {
-    JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8')).forEach(function (s) { if (s && feed.isMint(s.mint)) world.add(s, Date.now()); });
+    const j = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8')), rows = Array.isArray(j) ? j : j.tokens || [];
+    rows.forEach(function (s) { if (s && feed.isMint(s.mint)) world.add(s, Date.now()); });
+    lp.restore(j.launches);
   } catch (e) { /* no cache yet */ }
 }
 
+// So the Pulse columns are not empty after a restart, the last minutes of launches are simulated at once (before the real tokens join).
+const WARMUP_MIN = process.env.WARMUP_MIN !== undefined ? Number(process.env.WARMUP_MIN) : 30;
+function warmUp(minutes) {
+  if (!(minutes > 0) || world.size()) return;
+  const end = Date.now();
+  for (let t = end - minutes * 60000; t < end;) { t += 1000; advance(t); }
+}
+exports.warmUp = warmUp;
+
 exports.start = function () {
+  warmUp(WARMUP_MIN);
   loadCache();
   const timers = [];
-  timers.push(setInterval(function () { world.step(Date.now()); }, 1000));
+  timers.push(setInterval(function () { advance(Date.now()); }, 1000));
   timers.push(setInterval(function () { refreshAnchors(); }, ANCHOR_EVERY_MS));
   timers.push(setInterval(function () { discoverNow(); }, DISCOVER_EVERY_MS));
   timers.push(setInterval(saveCache, CACHE_EVERY_MS));
@@ -118,6 +137,6 @@ exports.start = function () {
 };
 exports.stop = function (timers) { (timers || []).forEach(clearInterval); };
 exports.flush = saveCache;
-exports._tick = function (now) { world.step(now); };
+exports._tick = function (now) { advance(now); };
 exports._refresh = refreshAnchors;
 exports._discover = discoverNow;

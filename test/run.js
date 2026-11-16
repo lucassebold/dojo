@@ -3,6 +3,7 @@
 const assert = require('assert');
 const http = require('http');
 const net = require('net');
+process.env.LAUNCH_RATE = '0'; process.env.WARMUP_MIN = '0';   // no random launches in the app tests
 process.env.DATA_DIR = require('path').join(require('os').tmpdir(), 'dojo-test-' + Date.now());
 const sim = require('../src/sim');
 const upstream = require('../src/http');
@@ -255,6 +256,10 @@ test('api: full flow - account, quote, buy, sell, isolation, leaderboard, valida
     assert.ok(lb.body.you);
     assert.ok(!JSON.stringify(lb.body).includes(A), 'the player token must never be exposed');
 
+    const pulse = await call(port, 'GET', '/api/pulse');
+    assert.strictEqual(pulse.status, 200);
+    assert.ok(Array.isArray(pulse.body.newPairs) && Array.isArray(pulse.body.finalStretch) && Array.isArray(pulse.body.migrated), 'pulse has the three columns');
+    assert.ok(pulse.body.migrated.length >= 1 && pulse.body.migrated.every(function (c) { return c.mint && c.progress === 1 && c.migrated; }), 'real tokens sit in the migrated column');
     const tok = await call(port, 'GET', '/api/token/' + M);
     assert.strictEqual(tok.status, 200);
     assert.strictEqual((await call(port, 'GET', '/api/token/xyz')).status, 400);
