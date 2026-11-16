@@ -10,7 +10,7 @@ const Launchpad = require('./launchpad');
 
 const world = World.create({});
 let pinned = function () { return {}; };     // mints somebody holds: never removed from the market
-const lp = Launchpad.create({ world: world, rate: process.env.LAUNCH_RATE !== undefined ? Number(process.env.LAUNCH_RATE) : 0.1, pinned: function () { return pinned(); } });
+const lp = Launchpad.create({ world: world, rate: process.env.LAUNCH_RATE !== undefined ? Number(process.env.LAUNCH_RATE) : undefined, pinned: function () { return pinned(); } });
 exports._world = world; exports._lp = lp;
 // one second of the market: the launchpad moves its launches, then every token takes a step
 function advance(now) { lp.tick(now); world.step(now); }
@@ -54,7 +54,7 @@ exports.newPairs = async function () {
 };
 
 // Pulse: simulated launches (New Pairs, Final Stretch) and what has migrated (simulated graduates plus the real tokens)
-exports.pulse = async function () { return Launchpad.pulse(world.list()); };
+exports.pulse = async function () { return Launchpad.pulse(world.list(), 30, { spark: function (m) { return world.sparkline(m, 24, 300); }, stats: lp.stats(Date.now()) }); };
 
 exports.candles = async function (pair, res, limit) {
   if (!feed.isMint(pair)) throw new Error('Invalid pair');

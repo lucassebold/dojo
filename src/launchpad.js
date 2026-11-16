@@ -32,9 +32,10 @@ exports.cardStats = function (s) {
   };
 };
 
-function card(s) {
+function card(s, spark) {
   const m = s.meta, st = m || exports.cardStats(s);
   return {
+    hot: false, spark: spark ? spark(s.mint) : [],      // hot is decided across the whole screen in pulse()
     mint: s.mint, pair: s.pair, symbol: s.symbol, name: s.name, icon: s.icon, createdAt: s.createdAt, price: s.price, marketCap: s.marketCap, volume: s.volume.h24, volume5m: s.volume.m5,
     netBuy: s.netBuy || 0, buys: s.buys24, sells: s.sells24, change5m: s.change.m5, dex: s.dex,
     progress: m ? m.progress : 1, migrated: m ? m.migrated : true, migratedAt: m ? m.migratedAt : s.createdAt, fake: !!m,
@@ -44,30 +45,38 @@ function card(s) {
 }
 
 // Migrated: simulated graduates (latest first) with room kept for the real tokens of the market, so both always show.
-function migratedColumn(grads, real, limit, by) {
+function migratedColumn(grads, real, limit, by, cardOf) {
   const g = grads.sort(by(function (s) { return s.meta.migratedAt; })).slice(0, Math.max(1, limit - 10));
   const r = real.sort(by(function (s) { return s.createdAt; })).slice(0, limit - g.length);
-  return g.concat(r).map(card).sort(by(function (c) { return c.migratedAt; }));
+  return g.concat(r).map(cardOf).sort(by(function (c) { return c.migratedAt; }));
 }
 
 // The three Pulse columns from the market snapshots.
-exports.pulse = function (snaps, limit) {
+exports.pulse = function (snaps, limit, extra) {
   limit = limit || 30;
+  const sp = extra && extra.spark, cardOf = function (s) { return card(s, sp); };
   const launches = snaps.filter(function (s) { return s.meta; }), real = snaps.filter(function (s) { return !s.meta && s.liquidity >= 1000; });
   const pre = launches.filter(function (s) { return !s.meta.migrated; });
   const by = function (f) { return function (a, b) { return f(b) - f(a); }; };
-  return {
-    newPairs: pre.filter(function (s) { return s.meta.progress < FINAL_FROM; }).sort(by(function (s) { return s.createdAt; })).slice(0, limit).map(card),
-    finalStretch: pre.filter(function (s) { return s.meta.progress >= FINAL_FROM; }).sort(by(function (s) { return s.meta.progress; })).slice(0, limit).map(card),
-    migrated: migratedColumn(launches.filter(function (s) { return s.meta.migrated; }), real, limit, by)
+  const out = {
+    newPairs: pre.filter(function (s) { return s.meta.progress < FINAL_FROM; }).sort(by(function (s) { return s.createdAt; })).slice(0, limit).map(cardOf),
+    finalStretch: pre.filter(function (s) { return s.meta.progress >= FINAL_FROM; }).sort(by(function (s) { return s.meta.progress; })).slice(0, limit).map(cardOf),
+    migrated: migratedColumn(launches.filter(function (s) { return s.meta.migrated; }), real, limit, by, cardOf),
+    stats: extra && extra.stats || null
   };
+  // HOT = the 15% of cards moving most right now (at least +10% in 5 minutes), so the tag keeps meaning "standout"
+  const all = out.newPairs.concat(out.finalStretch, out.migrated).map(function (c) { return c.change5m; }).sort(function (a, b) { return b - a; });
+  const cut = Math.max(10, all.length ? all[Math.floor(all.length * 0.15)] : 10);
+  out.newPairs.concat(out.finalStretch, out.migrated).forEach(function (c) { c.hot = c.change5m >= cut; });
+  return out;
 };
 
 exports.MIGRATE_MC = MIGRATE_MC; exports.FINAL_FROM = FINAL_FROM;
 
 exports.create = function (opts) {
   const world = opts.world, rng = opts.rng || Math.random, pinned = opts.pinned || function () { return {}; };
-  const rate = opts.rate != null ? opts.rate : 0.1, maxLive = opts.maxLive || 90;   // launches per second, and how many may be alive
+  const rate = opts.rate != null ? opts.rate : 0.6, maxLive = opts.maxLive || 220;   // launches per second, and how many may be alive
+  let spawned = 0, graduated = 0; const recent = [];                               // counters for the Pulse bar
   const live = {};
   let lastTick = 0;
   const lp = { live: live };
@@ -101,7 +110,7 @@ exports.create = function (opts) {
       change: { m5: 0, h1: 0, h6: 0, h24: 0 }, volume: { m5: m0 * 0.05, h1: m0 * 0.3, h6: m0 * 0.3, h24: m0 * 0.3 }, buys24: 2 + Math.floor(rng() * 6), sells24: Math.floor(rng() * 2),
       launch: true, pull: 1 / 20, sigmaScale: 0.55, meta: meta
     }, now);
-    live[mint] = rec;
+    live[mint] = rec; spawned++; recent.push(now);
     return mint;
   };
 
@@ -130,8 +139,7 @@ exports.create = function (opts) {
   lp.tick = function (now) {
     const dt = lastTick ? Math.min(5, (now - lastTick) / 1000) : 1;
     lastTick = now;
-    const mints = Object.keys(live);
-    if (mints.length < maxLive) for (let n = poisson(rng, rate * dt); n > 0; n--) lp.spawn(now);
+    for (let n = poisson(rng, rate * dt); n > 0; n--) lp.spawn(now);      // new launches never stop: the cap below drops the oldest ones instead
     const held = pinned();
     Object.keys(live).forEach(function (mint) {
       const rec = live[mint], t = world.get(mint), snap = world.snapshot(mint);
@@ -139,25 +147,33 @@ exports.create = function (opts) {
       const age = (now - rec.born) / 1000, meta = t.meta;
       if (!rec.migrated && snap.marketCap >= MIGRATE_MC) {
         rec.migrated = true; rec.migAge = age; rec.migMc = snap.marketCap; rec.postMult = rng() < 0.6 ? 0.45 + rng() * 0.35 : 1.3 + rng() * 1.4;
-        meta.migrated = true; meta.migratedAt = now; meta.dexPaid = rng() < 0.5; meta.progress = 1;
+        graduated++; meta.migrated = true; meta.migratedAt = now; meta.dexPaid = rng() < 0.5; meta.progress = 1;
         world.nudge(mint, { dex: 'pumpswap' });
       }
       const mc = target(rec, age), boost = rec.migrated && age - rec.migAge < 600 ? 3 : 1;
       if (!rec.migrated) meta.progress = clamp(snap.marketCap / MIGRATE_MC, 0, 1);
       world.nudge(mint, { price: mc / SUPPLY, liquidity: liqFor(mc, rec.migrated), vps: mc * rec.act / 3600 * (age < rec.dur ? 2 : 1) * boost });
       updateStats(rec, t, meta, age);
-      const dead = (!rec.migrated && age > 2400) || (rec.migrated && age - rec.migAge > 7200) || (!rec.migrated && age > 600 && snap.marketCap < 1800);
-      if (dead && !held[mint]) remove(mint);
+      // a token that went nowhere is dropped, unless somebody holds it or looked at it in the last 10 minutes
+      const dead = (!rec.migrated && age > 1500 && meta.progress < FINAL_FROM) || (!rec.migrated && age > 2700) || (rec.migrated && age - rec.migAge > 1500) || (!rec.migrated && age > 600 && snap.marketCap < 1800);
+      if (dead && !held[mint] && now - t.viewedAt > 600000) remove(mint);
     });
-    // too many alive: drop the oldest ones nobody holds
-    const left = Object.keys(live);
-    if (left.length > maxLive) {
-      left.filter(function (m) { return !held[m] && !live[m].migrated; }).sort(function (a, b) { return live[a].born - live[b].born; }).slice(0, left.length - maxLive).forEach(remove);
+    // too many waiting to migrate: drop the oldest ones nobody holds or watches, the ones going nowhere first (Final Stretch is kept)
+    const waiting = Object.keys(live).filter(function (m) { return !live[m].migrated; });
+    if (waiting.length > maxLive) {
+      const final = function (m) { return world.get(m).meta.progress >= FINAL_FROM ? 1 : 0; };
+      waiting.filter(function (m) { return !held[m] && now - world.get(m).viewedAt > 600000; })
+        .sort(function (a, b) { return final(a) - final(b) || live[a].born - live[b].born; }).slice(0, waiting.length - maxLive).forEach(remove);
     }
   };
 
   lp.serialize = function () { return Object.keys(live).map(function (m) { return live[m]; }); };
   lp.restore = function (recs) { (recs || []).forEach(function (r) { if (r && world.has(r.mint)) live[r.mint] = r; }); };
   lp.count = function () { return Object.keys(live).length; };
+  lp.stats = function (now) {
+    const cut = (now || lastTick) - 60000;
+    while (recent.length && recent[0] < cut) recent.shift();
+    return { launched: spawned, migrated: graduated, perMin: recent.length };
+  };
   return lp;
 };

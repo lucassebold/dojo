@@ -37,7 +37,12 @@ os zeros). As velas são atualizadas a cada 2 s direto da simulação.
 Tela com três colunas ao vivo, no estilo de um terminal de lançamentos: **New Pairs** (acabou de nascer), **Final Stretch**
 (perto de migrar) e **Migrated**. Cada cartão mostra avatar com anel de progresso, idade, redes, estatísticas de carteiras
 (T10, DEV, SNP, INS, BND), V (volume), MC, NB (compras líquidas) e um botão ⚡ de compra rápida com o valor configurável.
-Os cartões novos entram com animação e só o que mudou é atualizado (a cada 2 s); o market cap pisca na direção em que andou.
+Feito para parecer vivo: nasce um lançamento a cada ~2 s (`LAUNCH_RATE`), a tela atualiza a cada 1 s e só o que mudou é
+tocado. Cada cartão tem degradê verde/vermelho pela variação de 5 min que **respira**, números (MC, V, NB) que **rolam** até o
+novo valor, um flash na direção em que o market cap andou, um **mini-gráfico** dos últimos 5 min, selos **NEW** (primeiros
+20 s), **🚀 MIGRATED** (logo depois de migrar) e **🔥 HOT** (os 15% que mais se mexem, com piso de +10% em 5 min). Cartões novos
+entram com brilho e os que já estavam deslizam para o novo lugar. De tempos em tempos alguns cartões do topo "reconstroem" um
+número (dígitos embaralham e param no valor verdadeiro). A barra do topo mostra lançados, migrados e lançamentos por minuto.
 
 Os lançamentos (`src/launchpad.js`) são **inventados**: nome, endereço (`...pump`), dev e estatísticas. O destino de cada um é
 sorteado no nascimento: **dud** 55% (some), **meh** 25%, **runner** 12% (chega perto) e **graduate** 8% (passa de
@@ -46,8 +51,8 @@ a âncora do preço; o resto (ruído, euforia, saltos, volume, velas, gráfico d
 um lançamento se opera e se vê como qualquer moeda, com o impacto de preço de um poço pequeno. Holders, top 10, dev, snipers
 etc. evoluem com o tempo (holders crescem, top 10 e snipers caem, dev pode vender). Na coluna Migrated os graduados simulados
 dividem espaço com os tokens reais do mercado (pelo menos 10 vagas para eles). Ao ligar o servidor, os últimos 30 minutos de
-lançamentos são simulados de uma vez (`WARMUP_MIN`), para as colunas já nascerem cheias; `LAUNCH_RATE` (padrão 0,1 por segundo)
-controla quantos nascem. Quem tem posição num lançamento nunca o perde: ele é salvo em `DATA_DIR/universe.json`.
+lançamentos são simulados de uma vez (`WARMUP_MIN`), para as colunas já nascerem cheias. Os lançamentos que não foram a lugar
+algum somem depois de ~25 min (e há um teto de 220 esperando), sem nunca remover quem você tem ou abriu nos últimos 10 min. Quem tem posição num lançamento nunca o perde: ele é salvo em `DATA_DIR/universe.json`.
 
 ## Como funciona o resto
 - **Jogador**: um id aleatório guardado no navegador (`localStorage`). Dinheiro fictício, então não há login.
@@ -60,7 +65,7 @@ controla quantos nascem. Quem tem posição num lançamento nunca o perde: ele �
 - **Persistência**: um arquivo JSON (`DATA_DIR/accounts.json`). Serve para poucos usuários; o próximo passo é um banco.
 
 ## Variáveis de ambiente
-`PORT`, `HOST`, `DATA_DIR` (disco persistente em produção), `START_CASH` (10000), `FEE_PCT` (0.5), `LAUNCH_RATE` (0.1),
+`PORT`, `HOST`, `DATA_DIR` (disco persistente em produção), `START_CASH` (10000), `FEE_PCT` (0.5), `LAUNCH_RATE` (0.6 por segundo),
 `WARMUP_MIN` (30).
 
 ## Limites conhecidos

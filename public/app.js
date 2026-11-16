@@ -175,7 +175,7 @@ function scramble(el) {
   const final = el.textContent, n = final.length, t0 = performance.now();
   el.classList.add('scan');
   (function step(now) {
-    if (!el.isConnected) return;
+    if (!el.isConnected || el.hasAttribute('data-roll')) { el.classList.remove('scan'); return; }   // a number that is rolling to a new value wins
     const k = Math.min(1, (now - t0) / 700), fixed = Math.floor(k * n);
     let out = '';
     for (let i = 0; i < n; i++) { const c = final.charAt(i); out += i < fixed || !/[0-9]/.test(c) ? c : String(Math.floor(Math.random() * 10)); }
@@ -233,59 +233,103 @@ function homePage() {
 // ---------- pulse ----------
 // Three live columns like a launchpad terminal: New Pairs (just launched), Final Stretch (close to migrating) and Migrated.
 // The launches are simulated (made-up tokens, simulated prices); the Migrated column also lists the real tokens of the market.
+// Made to feel alive: a new launch about every second or two, a refresh every second, cards tinted by their 5m move that breathe,
+// numbers that roll to their new value, a sparkline per card, NEW / HOT / MIGRATED tags, and cards that slide when others arrive.
 const PULSE_COLS = [['newPairs', 'New Pairs'], ['finalStretch', 'Final Stretch'], ['migrated', 'Migrated']];
 const FACES = ['\u{1F438}', '\u{1F436}', '\u{1F431}', '\u{1F680}', '\u{1F319}', '\u{1F451}', '\u{1F525}', '\u{1F48E}', '\u{1F98D}', '\u{1F43B}', '\u{1F402}', '\u{1F986}', '\u{1F41F}', '\u{1F40B}', '\u{1F95A}', '\u{1F3A9}', '\u{1F9D9}', '\u{1F916}', '\u{1F47E}', '\u{1F34C}'];
+const PULSE_REFRESH_MS = 1000;
+const calm = function () { return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches; };
 function hashStr(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
 function ageShort(t) { const s = Math.max(0, (Date.now() - t) / 1000); return s < 60 ? Math.floor(s) + 's' : s < 3600 ? Math.floor(s / 60) + 'm' : s < 86400 ? Math.floor(s / 3600) + 'h' : Math.floor(s / 86400) + 'd'; }
 function pctShort(n) { return (Number(n) || 0).toFixed(n >= 10 ? 0 : 1) + '%'; }
-
 // Made-up tokens have no image: a gradient square with an emoji, the same one on the Pulse card and in the token header
 function emoFace(mint) { const h = hashStr(mint), hue = h % 360; return '<span class="emo" style="background:linear-gradient(135deg,hsl(' + hue + ' 70% 45%),hsl(' + ((hue + 50) % 360) + ' 70% 30%))">' + FACES[h % FACES.length] + '</span>'; }
 function tokFace(s) { return s.icon && /^https:\/\//.test(s.icon) ? icon(s.icon) : emoFace(s.mint); }
 
+// A number that rolls from its old value to the new one. Returns 1 / -1 when it moved up / down in a way you can see, else 0.
+function rollNum(el, to, fmtFn) {
+  const prev = el.getAttribute('data-v'); el.setAttribute('data-v', to);
+  if (prev === null) { el.textContent = fmtFn(to); return 0; }
+  const from = Number(prev);
+  if (from === to || fmtFn(from) === fmtFn(to)) return 0;
+  if (calm()) { el.textContent = fmtFn(to); return to > from ? 1 : -1; }
+  const t0 = performance.now(), mark = t0 + Math.random();
+  el.__roll = mark; el.setAttribute('data-roll', '1');
+  (function step(now) {
+    if (el.__roll !== mark) return;
+    const k = Math.min(1, (now - t0) / 600), e = 1 - Math.pow(1 - k, 3);
+    el.textContent = fmtFn(from + (to - from) * e);
+    if (k < 1 && el.isConnected) requestAnimationFrame(step); else { el.textContent = fmtFn(to); el.removeAttribute('data-roll'); }
+  })(t0);
+  return to > from ? 1 : -1;
+}
+const nbFmt = function (v) { return (v >= 0 ? '+' : '-') + compact(Math.abs(v)); };
+function fx(el, cls2) { el.classList.remove('fx-up', 'fx-down'); void el.offsetWidth; el.classList.add(cls2); }
+
 function pulseCard(c) {
   const face = c.icon && /^https:\/\//.test(c.icon) ? '<img src="' + esc(c.icon) + '" alt="" loading="lazy" referrerpolicy="no-referrer">' : emoFace(c.mint);
-  const pill = function (key, label, tip, bad) { return '<i class="pill" data-k="' + key + '" title="' + tip + '"><em>' + label + '</em> <b></b></i>'; };
-  return '<div class="pcard" data-mint="' + esc(c.mint) + '" data-t="' + esc(c.createdAt) + '"><a class="pmain" href="#/token/' + esc(c.mint) + '">' +
+  const pill = function (key, label, tip) { return '<i class="pill" data-k="' + key + '" title="' + tip + '"><em>' + label + '</em> <b></b></i>'; };
+  return '<div class="pcard" data-mint="' + esc(c.mint) + '" data-t="' + esc(c.createdAt) + '" style="--d:' + (-Math.random() * 3).toFixed(2) + 's"><a class="pmain" href="#/token/' + esc(c.mint) + '">' +
     '<div class="pav"><div class="ring"><div class="face">' + face + '</div></div><span class="hb" data-f="holders"></span></div>' +
-    '<div class="pbody"><div class="pn"><b>' + esc(c.symbol) + '</b> <span class="muted pname">' + esc(c.name) + '</span>' + (c.fake ? ' <span class="tag simt" title="Made-up token, simulated price">SIM</span>' : '') + '</div>' +
+    '<div class="pbody"><div class="pn"><b>' + esc(c.symbol) + '</b> <span class="muted pname">' + esc(c.name) + '</span><span class="tag pb" data-f="badge"></span>' + (c.fake ? ' <span class="tag simt" title="Made-up token, simulated price">SIM</span>' : '') + '</div>' +
     '<div class="pm"><span class="age" data-f="age"></span>' + (c.x ? '<span class="soc" title="X / Twitter">\u{1D54F}</span>' : '') + (c.tg ? '<span class="soc" title="Telegram">✈</span>' : '') + (c.web ? '<span class="soc" title="Website">\u{1F310}</span>' : '') + '<span class="dexp" data-f="dexp"></span><span class="muted">' + esc(c.handle) + '</span></div>' +
     '<div class="pstats">' + pill('top10', 'T10', 'Top 10 holders') + pill('dev', 'DEV', 'Dev holding') + pill('snipers', 'SNP', 'Snipers') + pill('insiders', 'INS', 'Insiders') + pill('bundlers', 'BND', 'Bundlers') + '</div></div></a>' +
-    '<div class="pbox"><div class="pvm"><span>V <b data-f="vol"></b></span><span>MC <b class="pmc" data-f="mc"></b></span></div><div class="pnb">NB <b data-f="nb"></b></div><button class="qbuy" data-mint="' + esc(c.mint) + '" title="Quick buy">⚡ <span class="qbamt"></span></button></div></div>';
+    '<div class="pbox"><svg class="pspark" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true"><polygon points=""/><polyline points=""/></svg>' +
+    '<div class="pvm"><span>V <b data-f="vol"></b></span><span>MC <b class="pmc" data-f="mc"></b></span></div><div class="pnb">NB <b data-f="nb"></b></div><button class="qbuy" data-mint="' + esc(c.mint) + '" title="Quick buy">⚡ <span class="qbamt"></span></button></div></div>';
 }
-// Updates only what changed in an existing card, and pops the market cap in the direction it moved
+// NEW for the first seconds, MIGRATED for a moment after crossing the line, HOT while it is moving fast
+function paintBadge(el) {
+  const c = el.__c, b = el.querySelector('[data-f="badge"]'); if (!c || !b) return;
+  const now = Date.now();
+  let txt = '', k = '';
+  if (c.fake && !c.migrated && now - c.createdAt < 20000) { txt = 'NEW'; k = 'new'; }
+  else if (c.fake && c.migrated && c.migratedAt && now - c.migratedAt < 40000) { txt = '\u{1F680} MIGRATED'; k = 'mig'; }
+  else if (c.hot) { txt = '\u{1F525} HOT'; k = 'hot'; }
+  if (b.textContent !== txt) b.textContent = txt;
+  const cl = 'tag pb' + (k ? ' ' + k : ''); if (b.className !== cl) b.className = cl;
+}
+function paintSpark(el, c) {
+  const sp = c.spark || [], svg = el.querySelector('.pspark'); if (!svg || sp.length < 2) return;
+  const pts = sp.map(function (v, i) { return (i * 100 / (sp.length - 1)).toFixed(1) + ',' + (36 - v * 0.32).toFixed(1); });
+  svg.querySelector('polyline').setAttribute('points', pts.join(' '));
+  svg.querySelector('polygon').setAttribute('points', '0,40 ' + pts.join(' ') + ' 100,40');
+}
+// Updates only what changed in an existing card; numbers roll and the card flashes in the direction the market cap moved
 function pulseUpdate(el, c) {
-  const set = function (f, txt) { const n = el.querySelector('[data-f="' + f + '"]'); if (n && n.textContent !== txt) { n.textContent = txt; return true; } return false; };
-  const mcEl = el.querySelector('[data-f="mc"]'), before = mcEl.getAttribute('data-v');
-  if (set('mc', compact(c.marketCap)) && before) {
-    const cls2 = c.marketCap > Number(before) ? 'bump-up' : 'bump-down';
-    mcEl.classList.remove('bump-up', 'bump-down'); void mcEl.offsetWidth; mcEl.classList.add(cls2);
-  }
-  mcEl.setAttribute('data-v', c.marketCap);
-  set('age', ageShort(c.createdAt)); set('vol', compact(c.volume)); set('holders', c.holders > 999 ? Math.round(c.holders / 100) / 10 + 'K' : String(c.holders));
-  const nb = el.querySelector('[data-f="nb"]'); const nbt = (c.netBuy >= 0 ? '+' : '-') + compact(Math.abs(c.netBuy)); if (nb.textContent !== nbt) nb.textContent = nbt; nb.className = c.netBuy >= 0 ? 'up' : 'down';
-  set('dexp', c.migrated && c.dexPaid ? 'DEX' : '');
-  const ring = el.querySelector('.ring'); ring.style.setProperty('--p', Math.round(c.progress * 100));
-  el.classList.toggle('mig', !!c.migrated);
+  el.__c = c;
+  const q = function (f) { return el.querySelector('[data-f="' + f + '"]'); };
+  const set = function (f, txt) { const n = q(f); if (n && n.textContent !== txt) n.textContent = txt; };
+  const mc = q('mc'), dirMc = rollNum(mc, c.marketCap, compact);
+  rollNum(q('vol'), c.volume, compact);
+  const nbEl = q('nb'); rollNum(nbEl, c.netBuy, nbFmt); nbEl.className = c.netBuy >= 0 ? 'up' : 'down';
+  if (dirMc) { mc.classList.remove('bump-up', 'bump-down'); void mc.offsetWidth; mc.classList.add(dirMc > 0 ? 'bump-up' : 'bump-down'); fx(el, dirMc > 0 ? 'fx-up' : 'fx-down'); }
+  set('age', ageShort(c.createdAt)); set('holders', c.holders > 999 ? Math.round(c.holders / 100) / 10 + 'K' : String(c.holders)); set('dexp', c.migrated && c.dexPaid ? 'DEX' : '');
+  const up = (Number(c.change5m) || 0) >= 0, k = Math.min(1, Math.abs(Number(c.change5m) || 0) / 25), bt = c.hot ? 1.5 : 2.8 - k;
+  el.classList.toggle('t-up', up); el.classList.toggle('t-down', !up); el.classList.toggle('mig', !!c.migrated);
+  el.style.setProperty('--i', k.toFixed(2)); el.style.setProperty('--bt', bt.toFixed(2) + 's');
+  el.querySelector('.ring').style.setProperty('--p', Math.round(c.progress * 100));
   const lim = { top10: [40, 25], dev: [8, 3], snipers: [12, 5], insiders: [8, 3], bundlers: [12, 5] };
   Array.prototype.forEach.call(el.querySelectorAll('.pill'), function (p) {
-    const k = p.getAttribute('data-k'), v = Number(c[k]) || 0, b = p.querySelector('b'), t = pctShort(v);
+    const key = p.getAttribute('data-k'), v = Number(c[key]) || 0, b = p.querySelector('b'), t = pctShort(v);
     if (b.textContent !== t) b.textContent = t;
-    p.className = 'pill ' + (v >= lim[k][0] ? 'bad' : v >= lim[k][1] ? 'mid' : 'ok');
+    const cl = 'pill ' + (v >= lim[key][0] ? 'bad' : v >= lim[key][1] ? 'mid' : 'ok'); if (p.className !== cl) p.className = cl;
   });
+  paintSpark(el, c); paintBadge(el);
 }
 
 function pulsePage() {
   let amt = 50;
   try { amt = Number(localStorage.getItem('dojo_quickbuy')) || 50; } catch (e) { /* storage blocked */ }
-  view.innerHTML = '<div class="pulse"><div class="pulsebar"><div><h2>Pulse</h2><span class="muted">Live launches &middot; made-up tokens with simulated prices. Migrated also lists real tokens.</span></div>' +
+  view.innerHTML = '<div class="pulse"><div class="pulsebar"><div><h2>Pulse <span class="livedot"></span></h2><span class="muted">Live launches &middot; made-up tokens with simulated prices. Migrated also lists real tokens.</span></div>' +
+    '<div class="pstatbar"><span>\u{1F680} Launched <b id="stL" class="up">0</b></span><span>\u{1F393} Migrated <b id="stM" class="up">0</b></span><span>⚡ <b id="stR">0</b>/min</span></div>' +
     '<div class="pulsetools"><input id="pfilter" placeholder="Search ticker or name" aria-label="Filter by ticker or name" autocomplete="off"><label class="qb">Quick buy $<input id="qbAmt" inputmode="decimal" value="' + esc(amt) + '" aria-label="Quick buy amount in dollars"></label></div></div>' +
     '<div class="pcols">' + PULSE_COLS.map(function (c) { return '<section class="pcol" data-col="' + c[0] + '"><header><b>' + c[1] + '</b><span class="cnt"></span></header><div class="plist"><div class="empty">Waiting for launches...</div></div></section>'; }).join('') + '</div></div>';
-  let data = null;
+  let data = null, inflight = false;
   const amountNow = function () { const v = parseFloat(String($('#qbAmt').value).replace(',', '.')); return isFinite(v) && v > 0 ? v : 50; };
   const paintAmt = function () { Array.prototype.forEach.call(document.querySelectorAll('.qbamt'), function (n) { n.textContent = '$' + amountNow(); }); };
   $('#qbAmt').addEventListener('input', function () { try { localStorage.setItem('dojo_quickbuy', String(amountNow())); } catch (e) { /* storage blocked */ } paintAmt(); });
   $('#pfilter').addEventListener('input', function () { render(); });
+  const intFmt = function (v) { return Math.round(v).toLocaleString('en-US'); };
 
   function render() {
     if (!data) return;
@@ -295,22 +339,33 @@ function pulsePage() {
       const want = (data[col[0]] || []).filter(function (c) { return !q || c.symbol.toLowerCase().indexOf(q) >= 0 || c.name.toLowerCase().indexOf(q) >= 0; });
       sec.querySelector('.cnt').textContent = want.length;
       const empty = list.querySelector('.empty'); if (empty) empty.remove();
-      const have = {}; Array.prototype.slice.call(list.children).forEach(function (el) { have[el.getAttribute('data-mint')] = el; });
+      const have = {}, before = {};
+      Array.prototype.slice.call(list.children).forEach(function (el) { have[el.getAttribute('data-mint')] = el; before[el.getAttribute('data-mint')] = el.offsetTop; });
       const keep = {}; want.forEach(function (c) { keep[c.mint] = 1; });
-      Object.keys(have).forEach(function (m) { if (!keep[m]) have[m].remove(); });
+      Object.keys(have).forEach(function (m) { if (!keep[m]) { have[m].remove(); delete have[m]; delete before[m]; } });
+      const entered = {};
       want.forEach(function (c, i) {
         let el = have[c.mint];
-        if (!el) { const tmp = document.createElement('div'); tmp.innerHTML = pulseCard(c); el = tmp.firstChild; el.classList.add('enter'); pulseUpdate(el, c); }
-        else pulseUpdate(el, c);
+        if (!el) { const tmp = document.createElement('div'); tmp.innerHTML = pulseCard(c); el = tmp.firstChild; el.classList.add('enter'); entered[c.mint] = 1; }
+        pulseUpdate(el, c);
         if (list.children[i] !== el) list.insertBefore(el, list.children[i] || null);
+      });
+      // cards that were already there slide to their new place instead of jumping
+      if (!calm()) Array.prototype.forEach.call(list.children, function (el) {
+        const m = el.getAttribute('data-mint'); if (entered[m] || before[m] === undefined) return;
+        const d = before[m] - el.offsetTop; if (Math.abs(d) > 2 && el.animate) el.animate([{ transform: 'translateY(' + d + 'px)' }, { transform: 'none' }], { duration: 320, easing: 'ease-out' });
       });
       if (!want.length) list.innerHTML = '<div class="empty">' + (q ? 'No match.' : 'Nothing here yet.') + '</div>';
     });
+    if (data.stats) { rollNum($('#stL'), data.stats.launched, intFmt); rollNum($('#stM'), data.stats.migrated, intFmt); rollNum($('#stR'), data.stats.perMin, intFmt); }
     paintAmt();
   }
   const load = function () {
-    if (pressing) return;
-    api('/api/pulse').then(function (j) { data = j; render(); }).catch(function (e) { if (!data) { const l = document.querySelector('.pcol .plist'); if (l) l.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; } });
+    if (pressing || inflight) return;
+    inflight = true;
+    api('/api/pulse').then(function (j) { data = j; render(); })
+      .catch(function (e) { if (!data) { const l = document.querySelector('.pcol .plist'); if (l) l.innerHTML = '<div class="empty">' + esc(e.message) + '</div>'; } })
+      .then(function () { inflight = false; });
   };
   document.querySelector('.pcols').addEventListener('click', function (e) {
     const b = e.target.closest('.qbuy'); if (!b || b.disabled) return;
@@ -319,8 +374,19 @@ function pulsePage() {
       setMe(j.me); toast('Bought ' + qty(j.trade.qty) + ' ' + j.trade.symbol + ' for ' + money(j.trade.usd));
     }).catch(function (err) { toast(err.message, true); }).then(function () { b.disabled = false; });
   });
-  every(1000, function () { Array.prototype.forEach.call(document.querySelectorAll('.pcard'), function (el) { const a = el.querySelector('[data-f="age"]'), t = ageShort(Number(el.getAttribute('data-t'))); if (a && a.textContent !== t) a.textContent = t; }); });
-  load(); every(2000, load);
+  // ambient life: every 1.2 s a few of the top cards re-"build" a number (digits shuffle and settle on the TRUE value, neutral glow)
+  every(1200, function () {
+    if (document.hidden || calm()) return;
+    Array.prototype.forEach.call(document.querySelectorAll('.plist'), function (list) {
+      const box = list.getBoundingClientRect(), cards = Array.prototype.filter.call(list.querySelectorAll('.pcard'), function (el) { const r = el.getBoundingClientRect(); return r.bottom > box.top && r.top < box.bottom; }).slice(0, 8);
+      for (let i = 0; i < 3 && cards.length; i++) {
+        const el = cards.splice(Math.floor(Math.random() * cards.length), 1)[0].querySelector('[data-f="' + ['mc', 'vol', 'nb'][Math.floor(Math.random() * 3)] + '"]');
+        if (el && !el.hasAttribute('data-roll') && !el.classList.contains('scan') && el.textContent) scramble(el);
+      }
+    });
+  });
+  every(1000, function () { Array.prototype.forEach.call(document.querySelectorAll('.pcard'), function (el) { const a = el.querySelector('[data-f="age"]'), t = ageShort(Number(el.getAttribute('data-t'))); if (a && a.textContent !== t) a.textContent = t; paintBadge(el); }); });
+  load(); every(PULSE_REFRESH_MS, load);
 }
 
 // ---------- new pairs ----------

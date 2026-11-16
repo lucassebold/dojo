@@ -103,7 +103,9 @@ test('dead launches are cleaned up, but never one that somebody holds', function
 
 test('the number of live launches is capped', function () {
   const m = mk(8, 2, { maxLive: 30 }); m.run(600);
-  assert.ok(m.lp.count() <= 33, 'alive ' + m.lp.count());
+  const waiting = m.lp.serialize().filter(function (r) { return !r.migrated; }).length;
+  assert.ok(waiting <= 30 + 3, 'launches waiting to migrate: ' + waiting);
+  assert.ok(m.lp.stats(m.now()).launched > 900, 'and new ones kept being born: ' + m.lp.stats(m.now()).launched);
 });
 
 test('a launch can be traded and charted like any token (price, liquidity, impact)', function () {
@@ -114,6 +116,47 @@ test('a launch can be traded and charted like any token (price, liquidity, impac
   assert.ok(q.ok && q.impactPct > 1 && q.impactPct < 60, 'a $100 buy in a ~$5K launch has real impact: ' + q.impactPct);
   sim.apply(a, s, q, NOW);
   assert.ok(sim.summary(a, { [mint]: s }).positions.length === 1);
+});
+
+test('cards carry a normalised sparkline, a hot flag and the launch counters', function () {
+  const m = mk(10, 0.5, { maxLive: 1000 }); m.run(600);
+  const pulse = Launchpad.pulse(m.world.list(), 30, { spark: function (mt) { return m.world.sparkline(mt, 24, 300); }, stats: m.lp.stats(m.now()) });
+  const cards = pulse.newPairs.concat(pulse.finalStretch, pulse.migrated);
+  assert.ok(cards.length > 10);
+  cards.forEach(function (c) {
+    assert.ok(Array.isArray(c.spark) && c.spark.length === 24 && c.spark.every(function (v) { return Number.isInteger(v) && v >= 0 && v <= 99; }), 'sparkline 0..99, 24 points');
+    assert.strictEqual(typeof c.hot, 'boolean');
+  });
+  assert.ok(pulse.stats.launched > 200 && pulse.stats.migrated >= 0 && pulse.stats.perMin > 15 && pulse.stats.perMin < 50, 'counters ' + JSON.stringify(pulse.stats));
+  assert.ok(pulse.stats.migrated <= pulse.stats.launched);
+});
+
+test('HOT stays a standout: about 15% of the cards, all of them moving clearly more than the rest', function () {
+  const m = mk(14, 0.6, { maxLive: 1000 }); m.run(3600);
+  const p = Launchpad.pulse(m.world.list(), 30, {}), all = [].concat(p.newPairs, p.finalStretch, p.migrated);
+  const hot = all.filter(function (c) { return c.hot; }), rest = all.filter(function (c) { return !c.hot; });
+  assert.ok(all.length > 40);
+  assert.ok(hot.length >= all.length * 0.08 && hot.length <= all.length * 0.25, 'hot share ' + hot.length + '/' + all.length);
+  assert.ok(Math.min.apply(null, hot.map(function (c) { return c.change5m; })) >= Math.max.apply(null, rest.map(function (c) { return c.change5m; })) - 1e-9, 'every hot card moved at least as much as every other card');
+  assert.ok(hot.every(function (c) { return c.change5m >= 10; }), 'and at least +10% in 5 minutes');
+});
+
+test('launches arrive fast by default (about one every couple of seconds) so New Pairs keeps changing', function () {
+  const world = World.create({ rng: World.mulberry32(11) }), lp = Launchpad.create({ world: world, rng: World.mulberry32(12) });
+  let t = NOW; for (let i = 0; i < 300; i++) { t += 1000; lp.tick(t); world.step(t); }
+  const n = lp.stats(t).launched;
+  assert.ok(n > 120 && n < 260, 'launches in 5 minutes with the default rate: ' + n);
+});
+
+test('a token somebody looked at in the last 10 minutes is not removed even if it went nowhere', function () {
+  const m = mk(13, 0); const mint = m.lp.spawn(NOW);
+  Object.assign(m.lp.live[mint], { mT: 2500, dur: 200, decay: 0.6 });   // a launch that fizzles out
+  m.run(550);
+  m.world.touch(mint, m.now());
+  m.run(500);                                          // it already counts as dead, but somebody looked at it 500 s ago
+  assert.ok(m.world.has(mint), 'a recently viewed launch stays');
+  m.run(700);                                          // more than 10 minutes without a view
+  assert.ok(!m.world.has(mint) || m.lp.live[mint].migrated, 'and goes once nobody looks');
 });
 
 (async function () {

@@ -240,3 +240,31 @@ td.r, th.r { text-align: right; }
 @media (prefers-reduced-motion: reduce) { .pcard.enter { animation: none; } }
 
 .thead .name .emo { width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex: none; }
+
+/* pulse, livelier: tint by the 5m move, breathing glow, flashes, sparkline, badges, stats bar */
+.plist { position: relative; }
+.pcard { position: relative; --i: .3; --edge: transparent; box-shadow: inset 3px 0 0 var(--edge); }
+.pcard.t-up { --edge: rgb(34 197 94 / calc(.3 + var(--i) * .7)); background-image: linear-gradient(90deg, transparent 25%, rgb(34 197 94 / calc(.04 + var(--i) * .2))); }
+.pcard.t-down { --edge: rgb(239 68 68 / calc(.3 + var(--i) * .7)); background-image: linear-gradient(90deg, transparent 25%, rgb(239 68 68 / calc(.04 + var(--i) * .2))); }
+.pcard > * { position: relative; z-index: 1; }
+.pcard::after { content: ""; position: absolute; inset: 0; z-index: 0; pointer-events: none; opacity: 0; animation: breathe var(--bt, 2.8s) ease-in-out var(--d, 0s) infinite; }
+.pcard.t-up::after { background: linear-gradient(90deg, transparent 20%, rgb(34 197 94 / calc(.12 + var(--i) * .3))); }
+.pcard.t-down::after { background: linear-gradient(90deg, transparent 20%, rgb(239 68 68 / calc(.12 + var(--i) * .3))); }
+.pcard.fx-up { animation: fxUp .8s ease-out; } .pcard.fx-down { animation: fxDown .8s ease-out; }
+@keyframes fxUp { 0% { box-shadow: inset 3px 0 0 var(--edge), inset 0 0 0 1px #22c55e, 0 0 16px #22c55e66; } 100% { box-shadow: inset 3px 0 0 var(--edge), inset 0 0 0 0 #22c55e00, 0 0 0 #22c55e00; } }
+@keyframes fxDown { 0% { box-shadow: inset 3px 0 0 var(--edge), inset 0 0 0 1px #ef4444, 0 0 16px #ef444466; } 100% { box-shadow: inset 3px 0 0 var(--edge), inset 0 0 0 0 #ef444400, 0 0 0 #ef444400; } }
+.pcard.enter { animation: pin .7s cubic-bezier(.2, .9, .3, 1.2); }
+@keyframes pin { 0% { opacity: 0; transform: translateY(-22px) scale(.96); box-shadow: inset 3px 0 0 var(--edge), 0 0 0 1px #a855f7, 0 0 26px #a855f7aa; } 60% { opacity: 1; } 100% { opacity: 1; transform: none; box-shadow: inset 3px 0 0 var(--edge); } }
+.pbox { position: relative; overflow: hidden; background: #120c24cc; }
+.pbox > * { position: relative; z-index: 1; }
+.pbox > .pspark { position: absolute; z-index: 0; inset: 0; width: 100%; height: 100%; opacity: .55; pointer-events: none; color: #22c55e; }
+.pcard.t-down .pspark { color: #ef4444; }
+.pspark polyline { fill: none; stroke: currentColor; stroke-width: 1.6; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+.pspark polygon { fill: currentColor; opacity: .16; }
+.tag.pb:empty { display: none; }
+.tag.pb.new { color: #c7f9d9; background: #22c55e22; border: 1px solid #22c55e88; animation: hotglow 1s ease-in-out infinite; box-shadow: 0 0 0 0 #22c55e00; }
+.tag.pb.mig { color: #f3e8ff; background: linear-gradient(135deg, #8b5cf688, #ff3d9a77); border: 1px solid #c084fc; animation: hotglow 1s ease-in-out infinite; }
+.pstatbar { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+.pstatbar b { font-variant-numeric: tabular-nums; font-size: 15px; color: var(--text); } .pstatbar b.up { color: #4ade80; }
+.pulsebar h2 .livedot { margin-left: 8px; }
+@media (prefers-reduced-motion: reduce) { .pcard::after, .pcard.fx-up, .pcard.fx-down, .tag.pb.new, .tag.pb.mig { animation: none; } }

@@ -128,7 +128,7 @@ exports.create = function (opts) {
     if (old) { applyReal(old, seed, nowMs); return old; }
     const t = {
       mint: seed.mint, symbol: seed.symbol, name: seed.name, icon: seed.icon || null, pair: seed.pair, dex: seed.dex || '', createdAt: seed.createdAt || 0,
-      x: 0, lf: 1, regime: 1, drift: 0, retraceLeft: 0, frenzyDir: 1, lastBuys: 0, lastSells: 0, addedAt: nowMs, viewedAt: nowMs, snap: null,
+      x: 0, lf: 1, regime: 1, drift: 0, retraceLeft: 0, frenzyDir: 1, lastBuys: 0, lastSells: 0, addedAt: nowMs, viewedAt: seed.launch ? 0 : nowMs, snap: null,
       meta: seed.meta || null, pull: seed.pull || 0, sigmaScale: seed.sigmaScale || 1, cumBuy: 0, cumSell: 0
     };
     if (!applyReal(t, seed, nowMs)) return null;
@@ -276,6 +276,15 @@ exports.create = function (opts) {
     for (let j = 0; j < list.length; j++) list[j].snap = snapshotOf(list[j], nowMs);
   };
 
+  // n points over the last `secs` seconds, scaled 0..99 between that window's low and high (what a card sparkline needs)
+  w.sparkline = function (mint, n, secs) {
+    const t = tokens[mint]; if (!t) return [];
+    const P = t.ticks.P, from = Math.max(0, P.length - secs), span = P.length - from;
+    if (span < 2) return [];
+    let lo = Infinity, hi = -Infinity; const out = [];
+    for (let i = 0; i < n; i++) { const p = P[from + Math.min(span - 1, Math.round(i * (span - 1) / (n - 1)))]; out.push(p); if (p < lo) lo = p; if (p > hi) hi = p; }
+    return out.map(function (p) { return hi === lo ? 50 : Math.round((p - lo) / (hi - lo) * 99); });
+  };
   w.snapshot = function (mint) { const t = tokens[mint]; return t ? t.snap : null; };
   w.list = function () { return Object.keys(tokens).map(function (k) { return tokens[k].snap; }); };
 
