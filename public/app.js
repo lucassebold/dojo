@@ -537,10 +537,10 @@ function tokenPage(mint) {
     const el = $('#bpane'); if (!el) return;
     if (tab === 'trades') {
       const sup = snap && snap.price > 0 ? snap.marketCap / snap.price : 1;
-      el.innerHTML = myTrades.length ? '<div class="scroll"><table><tr><th>Time</th><th>Type</th><th class="r">Market cap</th><th class="r">Price</th><th class="r">Amount</th><th class="r">Value</th><th class="r">Fee</th><th class="r">P&amp;L</th></tr>' +
+      el.innerHTML = myTrades.length ? '<div class="scroll"><table><tr><th>Time</th><th>Type</th><th class="r">Market cap</th><th class="r">Price</th><th class="r">Amount</th><th class="r">Value</th><th class="r">Fee</th><th class="r">Impact</th><th class="r">P&amp;L</th></tr>' +
         myTrades.map(function (t) {
           return '<tr><td class="muted">' + clock(t.t) + '</td><td class="' + (t.side === 'buy' ? 'up' : 'down') + '"><b>' + (t.side === 'buy' ? 'Buy' : 'Sell') + '</b></td><td class="r">' + compact(t.price * sup) + '</td><td class="r">' + price(t.price) +
-            '</td><td class="r">' + qty(t.qty) + '</td><td class="r">' + money(t.usd) + '</td><td class="r muted">' + money(t.fee) + '</td><td class="r ' + cls(t.pnl) + '">' + (t.pnl == null ? '-' : money(t.pnl)) + '</td></tr>';
+            '</td><td class="r">' + qty(t.qty) + '</td><td class="r">' + money(t.usd) + '</td><td class="r muted">' + money(t.fee) + '</td><td class="r ' + (t.impactPct >= 5 ? 'down' : t.impactPct >= 1 ? 'warn' : 'muted') + '">' + (t.impactPct == null ? '-' : (t.impactPct < 0.01 ? '<0.01' : t.impactPct.toFixed(2)) + '%') + '</td><td class="r ' + cls(t.pnl) + '">' + (t.pnl == null ? '-' : money(t.pnl)) + '</td></tr>';
         }).join('') + '</table></div>'
         : '<div class="empty" style="border:0">You have not traded ' + (snap ? esc(snap.symbol) : 'this token') + ' yet. Your buys and sells will show here and on the chart.</div>';
     } else if (tab === 'positions') {
@@ -698,10 +698,16 @@ function tokenPage(mint) {
       api('/api/quote', { method: 'POST', body: b }).then(function (j) {
         if (my !== quoteSeq || !$('#prev')) return;
         const q = j.quote, sym = esc(snap.symbol);
+        const im = q.impactPct, tier = im >= 5 ? 'high' : im >= 1 ? 'mid' : 'low', label = tier === 'high' ? 'High' : tier === 'mid' ? 'Medium' : 'Low';
         $('#prev').innerHTML = (q.side === 'buy'
-          ? 'You get about <b>' + qty(q.qty) + ' ' + sym + '</b><br><span class="muted">Avg price ' + price(q.execPrice) + ' &middot; fee ' + money(q.fee) + '</span>'
-          : 'You receive about <b>' + money(q.net) + '</b> for ' + qty(q.qty) + ' ' + sym + '<br><span class="muted">Avg price ' + price(q.execPrice) + ' &middot; fee ' + money(q.fee) + '</span>') +
-          '<br><span class="' + (q.impactPct > 5 ? 'warn' : 'muted') + '">Price impact ' + q.impactPct.toFixed(2) + '%' + (q.impactPct > 5 ? ' - this order moves the market a lot' : '') + '</span>';
+          ? 'You get about <b>' + qty(q.qty) + ' ' + sym + '</b>'
+          : 'You receive about <b>' + money(q.net) + '</b> for ' + qty(q.qty) + ' ' + sym) +
+          '<div class="kv"><span>Market price</span><b>' + price(q.price) + '</b></div>' +
+          '<div class="kv"><span>Avg fill price</span><b>' + price(q.execPrice) + '</b></div>' +
+          '<div class="kv"><span>Fee (' + esc(FEE) + '%)</span><b>' + money(q.fee) + '</b></div>' +
+          '<div class="kv impact ' + tier + '"><span>Price impact</span><b>' + (im < 0.01 ? '<0.01' : im.toFixed(2)) + '% <small>' + label + '</small></b></div>' +
+          '<div class="ibar"><i style="width:' + Math.max(2, Math.min(100, im * 4)) + '%"></i></div>' +
+          (tier === 'high' ? '<div class="iwarn">This order moves the pool a lot: you pay about ' + money(Math.abs(q.side === 'buy' ? q.usd * im / (100 + im) : q.usd * im / (100 - im))) + ' more than the market price.</div>' : '');
         $('#go').disabled = false;
       }).catch(function (e) { if (my === quoteSeq && $('#prev')) $('#prev').innerHTML = '<span class="down">' + esc(e.message) + '</span>'; });
     }, 250);
@@ -711,7 +717,7 @@ function tokenPage(mint) {
     busy = true; $('#go').disabled = true;
     api('/api/trade', { method: 'POST', body: b }).then(function (j) {
       setMe(j.me); const t = j.trade;
-      toast((t.side === 'buy' ? 'Bought ' : 'Sold ') + qty(t.qty) + ' ' + t.symbol + ' at ' + price(t.price) + (t.pnl != null ? ' (' + (t.pnl >= 0 ? '+' : '') + money(t.pnl) + ')' : ''));
+      toast((t.side === 'buy' ? 'Bought ' : 'Sold ') + qty(t.qty) + ' ' + t.symbol + ' at ' + price(t.price) + ' (impact ' + t.impactPct.toFixed(2) + '%)' + (t.pnl != null ? ' ' + (t.pnl >= 0 ? '+' : '') + money(t.pnl) : ''));
       renderSide(false); loadTrades(); paintEntry();
     }).catch(function (e) { toast(e.message, true); onInput(); }).then(function () { busy = false; });
   }
